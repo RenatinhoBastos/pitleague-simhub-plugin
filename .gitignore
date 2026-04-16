@@ -5,6 +5,3 @@ obj/
 *.suo
 .DS_Store
 *.nupkg
-
-# SimHub reference DLLs (downloaded by CI, not committed)
-lib/SimHubReferences/*.dll
