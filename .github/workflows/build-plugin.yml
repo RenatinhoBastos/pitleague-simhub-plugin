@@ -24,56 +24,67 @@ jobs:
         shell: powershell
         run: |
           $refsDir = "lib\SimHubReferences"
+          $tempDir = "C:\SimHub_temp"
+          $dlls = @("SimHub.Plugins.dll", "GameReaderCommon.dll", "SimHub.Plugins.Common.dll")
+
           New-Item -ItemType Directory -Force -Path $refsDir | Out-Null
 
-          # Try downloading SimHub portable zip from GitHub releases
-          $simhubUrl = "https://github.com/SHWotever/SimHub/releases/latest/download/SimHub.Portable.zip"
-          Write-Host "Downloading SimHub portable from $simhubUrl ..."
-          try {
-            Invoke-WebRequest -Uri $simhubUrl -OutFile SimHub.zip -UseBasicParsing
-            Expand-Archive SimHub.zip -DestinationPath SimHub_temp -Force
+          # Find the installer URL from SimHub's latest GitHub release
+          Write-Host "Fetching latest SimHub release info..."
+          $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/SHWotever/SimHub/releases/latest" -Headers @{ "User-Agent" = "GitHub-Actions" }
+          $installerAsset = $latestRelease.assets | Where-Object { $_.name -match "SimHub.*Setup.*\.exe$" } | Select-Object -First 1
+          $installerUrl = $installerAsset.browser_download_url
+          $version = $latestRelease.tag_name
 
-            # Find and copy DLLs (may be in root or subdirectory)
-            $dlls = @("SimHub.Plugins.dll", "GameReaderCommon.dll", "SimHub.Plugins.Common.dll")
-            foreach ($dll in $dlls) {
-              $found = Get-ChildItem -Path SimHub_temp -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) {
-                Copy-Item $found.FullName -Destination "$refsDir\$dll" -Force
-                Write-Host "  Copied $dll"
-              } else {
-                Write-Host "  WARNING: $dll not found in SimHub archive"
-              }
-            }
-
-            # Verify we got the required files
-            $missing = $dlls | Where-Object { -not (Test-Path "$refsDir\$_") }
-            if ($missing.Count -gt 0) {
-              Write-Host "Missing DLLs: $($missing -join ', ')"
-              Write-Host "Listing SimHub_temp contents for debug:"
-              Get-ChildItem SimHub_temp -Recurse -Filter "*.dll" | Select-Object FullName | Format-Table
-            }
-
-            Remove-Item SimHub.zip -Force -ErrorAction SilentlyContinue
-            Remove-Item SimHub_temp -Recurse -Force -ErrorAction SilentlyContinue
-          } catch {
-            Write-Host "Download failed: $_"
-            Write-Host "Checking if DLLs already exist in repo..."
+          if (-not $installerUrl) {
+            # Fallback to known version
+            $installerUrl = "https://github.com/SHWotever/SimHub/releases/download/9.6.6/SimHub_9.6.6_Setup.exe"
+            $version = "9.6.6 (fallback)"
           }
 
-          # Final check
-          $allExist = $true
-          foreach ($dll in @("SimHub.Plugins.dll", "GameReaderCommon.dll", "SimHub.Plugins.Common.dll")) {
-            if (Test-Path "$refsDir\$dll") {
-              Write-Host "OK: $refsDir\$dll"
+          Write-Host "SimHub version: $version"
+          Write-Host "Downloading installer from: $installerUrl"
+          Invoke-WebRequest -Uri $installerUrl -OutFile SimHubSetup.exe -UseBasicParsing
+
+          $fileSize = [math]::Round((Get-Item SimHubSetup.exe).Length / 1MB, 1)
+          Write-Host "Downloaded: $fileSize MB"
+
+          # Run Inno Setup installer silently to a temp directory
+          Write-Host "Installing SimHub silently to $tempDir ..."
+          $proc = Start-Process -FilePath ".\SimHubSetup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/DIR=$tempDir" `
+            -Wait -NoNewWindow -PassThru
+
+          Write-Host "Installer exit code: $($proc.ExitCode)"
+
+          # Copy the required DLLs
+          Write-Host "Searching for DLLs in $tempDir ..."
+          foreach ($dll in $dlls) {
+            $found = Get-ChildItem -Path $tempDir -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+              Copy-Item $found.FullName -Destination "$refsDir\$dll" -Force
+              $size = [math]::Round($found.Length / 1KB, 1)
+              Write-Host "  FOUND: $dll ($size KB) -> $($found.FullName)"
             } else {
-              Write-Host "MISSING: $refsDir\$dll"
-              $allExist = $false
+              Write-Host "  MISSING: $dll"
             }
           }
-          if (-not $allExist) {
-            Write-Error "Required SimHub DLLs not found. Build will fail."
-            exit 1
+
+          # Verify all required DLLs exist
+          $missing = $dlls | Where-Object { -not (Test-Path "$refsDir\$_") }
+          if ($missing.Count -gt 0) {
+            Write-Host "`nAvailable DLLs in SimHub install:"
+            Get-ChildItem -Path $tempDir -Filter "*.dll" -Recurse | ForEach-Object {
+              Write-Host "  $($_.FullName) ($([math]::Round($_.Length / 1KB, 1)) KB)"
+            }
+            throw "Missing required DLLs: $($missing -join ', ')"
           }
+
+          Write-Host "`nAll SimHub reference DLLs found!"
+
+          # Cleanup
+          Remove-Item SimHubSetup.exe -Force -ErrorAction SilentlyContinue
+          # Don't remove $tempDir — the uninstaller may need it, and the runner is ephemeral anyway
 
       - name: Restore NuGet packages
         run: nuget restore PitLeaguePlugin/PitLeaguePlugin.csproj
