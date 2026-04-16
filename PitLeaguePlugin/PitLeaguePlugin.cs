@@ -19,7 +19,7 @@ namespace PitLeague.SimHub
 
         // ─── SimHub Interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
-        public string PictureIcon => "PitLeague.svg";
+        public System.Windows.Media.ImageSource PictureIcon => null;
         public string LeftMenuTitle => "PitLeague Telemetry";
 
         // ─── Estado interno ───────────────────────────────────────────────────
