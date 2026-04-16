@@ -1,0 +1,123 @@
+name: Build SimHub Plugin
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Download SimHub references
+        shell: powershell
+        run: |
+          $refsDir = "lib\SimHubReferences"
+          New-Item -ItemType Directory -Force -Path $refsDir | Out-Null
+
+          # Try downloading SimHub portable zip from GitHub releases
+          $simhubUrl = "https://github.com/SHWotever/SimHub/releases/latest/download/SimHub.Portable.zip"
+          Write-Host "Downloading SimHub portable from $simhubUrl ..."
+          try {
+            Invoke-WebRequest -Uri $simhubUrl -OutFile SimHub.zip -UseBasicParsing
+            Expand-Archive SimHub.zip -DestinationPath SimHub_temp -Force
+
+            # Find and copy DLLs (may be in root or subdirectory)
+            $dlls = @("SimHub.Plugins.dll", "GameReaderCommon.dll", "SimHub.Plugins.Common.dll")
+            foreach ($dll in $dlls) {
+              $found = Get-ChildItem -Path SimHub_temp -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) {
+                Copy-Item $found.FullName -Destination "$refsDir\$dll" -Force
+                Write-Host "  Copied $dll"
+              } else {
+                Write-Host "  WARNING: $dll not found in SimHub archive"
+              }
+            }
+
+            # Verify we got the required files
+            $missing = $dlls | Where-Object { -not (Test-Path "$refsDir\$_") }
+            if ($missing.Count -gt 0) {
+              Write-Host "Missing DLLs: $($missing -join ', ')"
+              Write-Host "Listing SimHub_temp contents for debug:"
+              Get-ChildItem SimHub_temp -Recurse -Filter "*.dll" | Select-Object FullName | Format-Table
+            }
+
+            Remove-Item SimHub.zip -Force -ErrorAction SilentlyContinue
+            Remove-Item SimHub_temp -Recurse -Force -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "Download failed: $_"
+            Write-Host "Checking if DLLs already exist in repo..."
+          }
+
+          # Final check
+          $allExist = $true
+          foreach ($dll in @("SimHub.Plugins.dll", "GameReaderCommon.dll", "SimHub.Plugins.Common.dll")) {
+            if (Test-Path "$refsDir\$dll") {
+              Write-Host "OK: $refsDir\$dll"
+            } else {
+              Write-Host "MISSING: $refsDir\$dll"
+              $allExist = $false
+            }
+          }
+          if (-not $allExist) {
+            Write-Error "Required SimHub DLLs not found. Build will fail."
+            exit 1
+          }
+
+      - name: Restore NuGet packages
+        run: nuget restore PitLeaguePlugin/PitLeaguePlugin.csproj
+
+      - name: Build Release
+        run: msbuild PitLeaguePlugin/PitLeaguePlugin.csproj /p:Configuration=Release /p:Platform=AnyCPU /p:SIMHUB_PATH=..\lib\SimHubReferences
+        shell: cmd
+
+      - name: Verify DLL output
+        shell: powershell
+        run: |
+          $dll = "PitLeaguePlugin\bin\Release\PitLeaguePlugin.dll"
+          if (Test-Path $dll) {
+            $size = (Get-Item $dll).Length / 1KB
+            Write-Host "Build successful: $dll ($([math]::Round($size, 1)) KB)"
+          } else {
+            Write-Error "Build output not found: $dll"
+            Get-ChildItem PitLeaguePlugin\bin -Recurse -ErrorAction SilentlyContinue | Format-Table FullName, Length
+            exit 1
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PitLeaguePlugin
+          path: PitLeaguePlugin/bin/Release/PitLeaguePlugin.dll
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PitLeaguePlugin/bin/Release/PitLeaguePlugin.dll
+          generate_release_notes: true
+          body: |
+            ## PitLeague SimHub Plugin
+
+            ### Como instalar
+            1. Baixe `PitLeaguePlugin.dll` abaixo
+            2. Copie para `C:\Program Files (x86)\SimHub\PluginManager\plugins\`
+            3. Reinicie o SimHub
+            4. Vá em Settings → Plugins → ative "PitLeague Telemetry"
+            5. Configure API Key e League ID nas configurações do plugin
+
+            ### Compatibilidade
+            - SimHub 9.x ou superior
+            - .NET Framework 4.8
+            - F1 25, ACC, iRacing e 200+ jogos suportados pelo SimHub

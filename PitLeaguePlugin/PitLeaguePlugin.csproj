@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>PitLeaguePlugin</AssemblyName>
+    <RootNamespace>PitLeague.SimHub</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>PitLeague</Authors>
+    <Description>Plugin SimHub para enviar resultados de corrida ao PitLeague</Description>
+    <!-- 
+      IMPORTANTE: Após compilar, copie PitLeaguePlugin.dll para:
+      C:\Program Files (x86)\SimHub\PluginManager\plugins\
+    -->
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Nullable>disable</Nullable>
+    <LangVersion>9.0</LangVersion>
+  </PropertyGroup>
+
+  <!-- ─── Dependências NuGet ──────────────────────────────────────────────── -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3"/>
+  </ItemGroup>
+
+  <!-- ─── Referências ao SimHub (ajuste o caminho se necessário) ─────────── -->
+  <ItemGroup>
+    <!--
+      Se o SimHub estiver em outro diretório, ajuste SIMHUB_PATH abaixo.
+      Padrão: C:\Program Files (x86)\SimHub\
+    -->
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SIMHUB_PATH)\SimHub.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SIMHUB_PATH)\GameReaderCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SimHub.Plugins.Common">
+      <HintPath>$(SIMHUB_PATH)\SimHub.Plugins.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
+  <ItemGroup>
+    <Compile Include="PitLeaguePlugin.cs"/>
+    <Compile Include="Settings.cs"/>
+    <Compile Include="Models.cs"/>
+    <Compile Include="SettingsControl.xaml.cs">
+      <DependentUpon>SettingsControl.xaml</DependentUpon>
+    </Compile>
+    <Page Include="SettingsControl.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+  </ItemGroup>
+
+</Project>
