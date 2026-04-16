@@ -270,8 +270,8 @@ namespace PitLeague.SimHub
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var result = JsonConvert.DeserializeObject<dynamic>(body);
-                    string league = result?.league ?? "";
+                    var json = Newtonsoft.Json.Linq.JObject.Parse(body);
+                    string league = json["league"]?.ToString() ?? "";
                     IsConnected = true;
                     UpdateStatus(league.Length > 0 ? $"Conectado à liga: {league}" : "Conexão OK com o PitLeague");
                     return true;
