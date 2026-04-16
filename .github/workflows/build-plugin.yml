@@ -31,7 +31,7 @@ jobs:
 
           # Fixed version — update manually when SimHub releases a new version
           $version = "9.11.11"
-          $url = "https://github.com/SHWotever/SimHub/releases/download/$version/SimHubSetup_$version.exe"
+          $url = "https://github.com/RenatinhoBastos/pitleague-simhub-plugin/releases/download/v1.0.0/SimHubSetup_$version.exe"
 
           Write-Host "Downloading SimHub $version..."
           curl.exe -L -o SimHubSetup.exe $url --retry 3 --retry-delay 5 --fail
