@@ -29,21 +29,12 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $refsDir | Out-Null
 
-          # Find the installer URL from SimHub's latest GitHub release
-          Write-Host "Fetching latest SimHub release info..."
-          $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/SHWotever/SimHub/releases/latest" -Headers @{ "User-Agent" = "GitHub-Actions" }
-          $installerAsset = $latestRelease.assets | Where-Object { $_.name -match "SimHub.*Setup.*\.exe$" } | Select-Object -First 1
-          $installerUrl = $installerAsset.browser_download_url
-          $version = $latestRelease.tag_name
-
-          if (-not $installerUrl) {
-            # Fallback to known version
-            $installerUrl = "https://github.com/SHWotever/SimHub/releases/download/9.6.6/SimHub_9.6.6_Setup.exe"
-            $version = "9.6.6 (fallback)"
-          }
+          # Fixed version — update manually when SimHub releases a new version
+          $version = "9.11.11"
+          $installerUrl = "https://github.com/SHWotever/SimHub/releases/download/$version/SimHubSetup_$version.exe"
 
           Write-Host "SimHub version: $version"
-          Write-Host "Downloading installer from: $installerUrl"
+          Write-Host "Downloading from: $installerUrl"
           Invoke-WebRequest -Uri $installerUrl -OutFile SimHubSetup.exe -UseBasicParsing
 
           $fileSize = [math]::Round((Get-Item SimHubSetup.exe).Length / 1MB, 1)
