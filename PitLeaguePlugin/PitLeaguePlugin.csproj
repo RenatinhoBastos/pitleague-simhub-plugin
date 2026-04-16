@@ -43,12 +43,9 @@
     </Reference>
   </ItemGroup>
 
-  <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
+  <!-- ─── Arquivos do projeto (SDK auto-includes .cs files) ─────────────── -->
   <ItemGroup>
-    <Compile Include="PitLeaguePlugin.cs"/>
-    <Compile Include="Settings.cs"/>
-    <Compile Include="Models.cs"/>
-    <Compile Include="SettingsControl.xaml.cs">
+    <Compile Update="SettingsControl.xaml.cs">
       <DependentUpon>SettingsControl.xaml</DependentUpon>
     </Compile>
     <Page Include="SettingsControl.xaml">
