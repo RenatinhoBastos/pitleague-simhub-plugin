@@ -260,22 +260,28 @@ namespace PitLeague.SimHub
             try
             {
                 UpdateStatus("Testando conexão...");
-                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/api-keys";
+                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/test";
 
                 var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
 
                 var response = await _http.SendAsync(request);
+                var body = await response.Content.ReadAsStringAsync();
+
                 if (response.IsSuccessStatusCode)
                 {
+                    var result = JsonConvert.DeserializeObject<dynamic>(body);
+                    string league = result?.league ?? "";
                     IsConnected = true;
-                    UpdateStatus("Conexão OK com o PitLeague");
+                    UpdateStatus(league.Length > 0 ? $"Conectado à liga: {league}" : "Conexão OK com o PitLeague");
                     return true;
                 }
                 else
                 {
                     IsConnected = false;
-                    UpdateStatus($"API retornou {(int)response.StatusCode} — verifique a API Key");
+                    var snippet = body.Length > 150 ? body.Substring(0, 150) : body;
+                    UpdateStatus($"Erro {(int)response.StatusCode}: {snippet}");
+                    System.Diagnostics.Debug.WriteLine($"[PitLeague] Test failed: {(int)response.StatusCode} {body}");
                     return false;
                 }
             }
