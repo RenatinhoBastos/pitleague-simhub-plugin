@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -13,38 +14,39 @@ namespace PitLeague.SimHub
     [PluginDescription("Envia resultados de corrida automaticamente para o PitLeague")]
     [PluginAuthor("PitLeague")]
     [PluginName("PitLeague")]
-    public class PitLeaguePlugin : IPlugin, IWPFSettings, IWPFSettingsV2
+    public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
         public const string VERSION = "1.0.0";
 
-        // ─── SimHub Interface ─────────────────────────────────────────────────
+        // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
-        public System.Windows.Media.ImageSource PictureIcon => null;
+        public ImageSource PictureIcon => null;
         public string LeftMenuTitle => "PitLeague Telemetry";
 
-        // ─── Estado interno ───────────────────────────────────────────────────
+        // ─── Settings ─────────────────────────────────────────────────────────
         public PitLeaguePluginSettings Settings { get; private set; }
 
-        private static readonly HttpClient _http = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(15)
-        };
+        // ─── Internal state ───────────────────────────────────────────────────
+        private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
-        // Controle de sessão
-        private string  _currentSessionUID    = "";
-        private string  _lastSessionPhase     = "";
-        private bool    _resultReadyToSend    = false;
-        private bool    _resultSentThisSession = false;
-        private int     _polePositionIdx      = -1; // índice do piloto que fez pole
+        private string _lastSessionType = "";
+        private bool _wasInRace = false;
+        private bool _resultSentThisSession = false;
 
-        // Para UI — último status legível
+        // Snapshot of opponents at end of race (copied from ref GameData)
+        private List<OpponentSnapshot> _lastOpponents;
+        private string _lastTrackName = "";
+        private string _lastGameName = "";
+        private int _lastTotalLaps = 0;
+        private string _lastSessionTypeName = "";
+
+        // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
-        public bool   IsConnected       { get; private set; } = false;
-
-        // Evento para atualizar a UI
+        public bool IsConnected { get; private set; } = false;
+        public bool ResultReadyToSend { get; private set; } = false;
         public event EventHandler StatusChanged;
 
-        // ─── Init / End ───────────────────────────────────────────────────────
+        // ─── Init ─────────────────────────────────────────────────────────────
 
         public void Init(PluginManager pluginManager)
         {
@@ -55,13 +57,12 @@ namespace PitLeague.SimHub
                 () => new PitLeaguePluginSettings()
             );
 
-            // Expor propriedades que aparecem no SimHub Dashboard
-            pluginManager.AddProperty("PitLeague.Connected",        this.GetType(), false);
-            pluginManager.AddProperty("PitLeague.LastStatus",        this.GetType(), "Aguardando...");
-            pluginManager.AddProperty("PitLeague.LastSentAt",        this.GetType(), "");
+            pluginManager.AddProperty("PitLeague.Connected", this.GetType(), false);
+            pluginManager.AddProperty("PitLeague.LastStatus", this.GetType(), "Aguardando...");
+            pluginManager.AddProperty("PitLeague.LastSentAt", this.GetType(), "");
             pluginManager.AddProperty("PitLeague.ResultReadyToSend", this.GetType(), false);
 
-            UpdateStatus("Plugin PitLeague v" + VERSION + " iniciado ✓");
+            UpdateStatus("Plugin PitLeague v" + VERSION + " iniciado");
         }
 
         public void End(PluginManager pluginManager)
@@ -70,106 +71,130 @@ namespace PitLeague.SimHub
             SimHub.Logging.Current.Info("[PitLeague] Plugin encerrado");
         }
 
-        // ─── DataUpdate — chamado a cada frame pelo SimHub ────────────────────
+        // ─── DataUpdate — called every frame by SimHub ────────────────────────
 
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
         {
-            // Jogo não está rodando
-            if (!data.GameRunning)
+            if (data.NewData == null) return;
+
+            var sessionType = data.NewData.SessionTypeName ?? "";
+            var isRace = sessionType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
+                      || sessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            // While in race, keep snapshotting data (we need it when race ends)
+            if (isRace && data.GameRunning)
             {
-                _resultReadyToSend = false;
-                return;
+                SnapshotData(data);
             }
 
-            // Só processar sessões do tipo Race (quando RaceOnlyMode = true)
-            var sessionType = data.GameData?.SessionTypeName ?? "";
-            if (Settings.RaceOnlyMode && !sessionType.Contains("Race"))
-                return;
-
-            // Detectar mudança de sessão (novo UUID = nova corrida)
-            var sessionUID = GetSessionUID(pluginManager, data);
-            if (sessionUID != _currentSessionUID)
+            // Detect transition: was in race → no longer in race
+            if (_wasInRace && !isRace && !_resultSentThisSession)
             {
-                _currentSessionUID     = sessionUID;
-                _resultSentThisSession = false;
-                _resultReadyToSend     = false;
-                _lastSessionPhase      = "";
-                _polePositionIdx       = -1;
+                ResultReadyToSend = true;
+                pluginManager.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
 
-                if (Settings.DebugMode)
-                    SimHub.Logging.Current.Info("[PitLeague] Nova sessão detectada: " + sessionUID);
-            }
-
-            // Detectar fase da sessão
-            var phase = data.GameData?.SessionPhase ?? "";
-            if (phase == _lastSessionPhase) return; // nada mudou
-            _lastSessionPhase = phase;
-
-            if (Settings.DebugMode)
-                SimHub.Logging.Current.Info("[PitLeague] Fase: " + phase + " | Track: " + data.GameData?.TrackName);
-
-            // Capturar pole position durante Qualifying/Formation
-            if (phase == "Qualifying" || phase == "Formation")
-            {
-                _polePositionIdx = 0; // SimHub já ordena por posição
-            }
-
-            // ✅ Corrida terminou
-            if (phase == "Checkered" || phase == "PostSession")
-            {
-                if (!_resultSentThisSession)
+                if (Settings.AutoSendOnRaceEnd)
                 {
-                    _resultReadyToSend = true;
-                    pluginManager.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
-                    UpdateStatus("Corrida finalizada! " + (Settings.AutoSendOnRaceEnd ? "Enviando..." : "Pronto para enviar."));
-
-                    if (Settings.AutoSendOnRaceEnd)
-                    {
-                        Task.Run(() => SendResult(pluginManager, data));
-                    }
+                    UpdateStatus("Corrida finalizada! Enviando...");
+                    Task.Run(() => SendResultFromSnapshot());
                 }
+                else
+                {
+                    UpdateStatus("Corrida finalizada! Pronto para enviar.");
+                }
+            }
+
+            // Detect new race session (reset state)
+            if (isRace && !_wasInRace)
+            {
+                _resultSentThisSession = false;
+                ResultReadyToSend = false;
+                _lastOpponents = null;
+                if (Settings.DebugMode)
+                    SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + sessionType);
+            }
+
+            _wasInRace = isRace;
+            _lastSessionType = sessionType;
+        }
+
+        // ─── Snapshot opponents (safe copy from ref GameData) ─────────────────
+
+        private void SnapshotData(GameData data)
+        {
+            try
+            {
+                _lastTrackName = data.NewData.TrackName ?? "Unknown";
+                _lastTotalLaps = data.NewData.TotalLaps;
+                _lastSessionTypeName = data.NewData.SessionTypeName ?? "Race";
+                _lastGameName = Settings.GameDisplayName.Length > 0
+                    ? Settings.GameDisplayName
+                    : (data.GameName ?? "Unknown");
+
+                var opponents = data.NewData.Opponents;
+                if (opponents == null || opponents.Count == 0) return;
+
+                _lastOpponents = opponents.Select(o => new OpponentSnapshot
+                {
+                    Position = o.Position,
+                    Name = o.Name ?? "",
+                    TeamName = o.TeamName ?? "",
+                    CarNumber = o.CarNumber ?? "",
+                    BestLapTime = o.BestLapTime,
+                    IsPlayer = o.IsPlayer,
+                    IsInPit = o.IsInPit,
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                if (Settings.DebugMode)
+                    SimHub.Logging.Current.Error("[PitLeague] Snapshot error: " + ex.Message);
             }
         }
 
-        // ─── Envio do resultado ───────────────────────────────────────────────
+        // ─── Send result from last snapshot ───────────────────────────────────
 
-        /// <summary>Chamado pelo botão "Enviar Resultado" na UI ou automaticamente</summary>
-        public async Task<bool> SendResult(PluginManager pluginManager, GameData data)
+        public async Task<bool> SendResultFromSnapshot()
         {
             if (string.IsNullOrEmpty(Settings.ApiKey))
             {
-                UpdateStatus("❌ API Key não configurada");
+                UpdateStatus("API Key não configurada");
                 return false;
             }
-
             if (string.IsNullOrEmpty(Settings.LeagueId))
             {
-                UpdateStatus("❌ League ID não configurado");
+                UpdateStatus("League ID não configurado");
+                return false;
+            }
+            if (_lastOpponents == null || _lastOpponents.Count == 0)
+            {
+                UpdateStatus("Nenhum dado de corrida capturado");
                 return false;
             }
 
             try
             {
                 UpdateStatus("Coletando dados...");
-                var payload = BuildPayload(pluginManager, data);
+                var payload = BuildPayloadFromSnapshot();
 
                 if (payload.Session.Results.Count < Settings.MinDriversToSend)
                 {
-                    UpdateStatus($"❌ Apenas {payload.Session.Results.Count} pilotos (mínimo: {Settings.MinDriversToSend})");
+                    UpdateStatus($"Apenas {payload.Session.Results.Count} pilotos (mínimo: {Settings.MinDriversToSend})");
                     return false;
                 }
 
                 UpdateStatus($"Enviando {payload.Session.Results.Count} pilotos...");
 
-                var json    = JsonConvert.SerializeObject(payload);
+                var json = JsonConvert.SerializeObject(payload);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var url     = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
+                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
 
-                _http.DefaultRequestHeaders.Clear();
-                _http.DefaultRequestHeaders.Add("Authorization", "Bearer " + Settings.ApiKey);
+                var request = new HttpRequestMessage(HttpMethod.Post, url);
+                request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
+                request.Content = content;
 
-                var response = await _http.PostAsync(url, content);
-                var body     = await response.Content.ReadAsStringAsync();
+                var response = await _http.SendAsync(request);
+                var body = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -178,51 +203,49 @@ namespace PitLeague.SimHub
                         ? $" ({result.Matched}/{result.Total} gamertags vinculados)"
                         : "";
 
-                    Settings.LastSentSessionUID = _currentSessionUID;
-                    Settings.LastSentAt         = DateTime.UtcNow;
-                    Settings.LastSendStatus     = "✅ Enviado com sucesso" + matchInfo;
-
+                    Settings.LastSentAt = DateTime.UtcNow;
+                    Settings.LastSendStatus = "Enviado com sucesso" + matchInfo;
                     _resultSentThisSession = true;
-                    _resultReadyToSend     = false;
-                    IsConnected            = true;
+                    ResultReadyToSend = false;
+                    IsConnected = true;
 
                     this.SaveCommonSettings("PitLeagueSettings", Settings);
-                    UpdateStatus("✅ Resultado enviado!" + matchInfo);
+                    UpdateStatus("Resultado enviado!" + matchInfo);
 
-                    pluginManager.SetPropertyValue("PitLeague.Connected",    this.GetType(), true);
-                    pluginManager.SetPropertyValue("PitLeague.LastSentAt",    this.GetType(), DateTime.Now.ToString("dd/MM HH:mm"));
-                    pluginManager.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
+                    PluginManager?.SetPropertyValue("PitLeague.Connected", this.GetType(), true);
+                    PluginManager?.SetPropertyValue("PitLeague.LastSentAt", this.GetType(), DateTime.Now.ToString("dd/MM HH:mm"));
+                    PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
 
-                    SimHub.Logging.Current.Info("[PitLeague] Resultado enviado ✓" + matchInfo);
+                    SimHub.Logging.Current.Info("[PitLeague] Resultado enviado" + matchInfo);
                     return true;
                 }
                 else
                 {
-                    var erro = $"❌ Erro {(int)response.StatusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
+                    var erro = $"Erro {(int)response.StatusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
                     UpdateStatus(erro);
-                    SimHub.Logging.Current.Error("[PitLeague] Falha no envio: " + body);
+                    SimHub.Logging.Current.Error("[PitLeague] Falha: " + body);
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                var erro = "❌ Exceção: " + ex.Message;
-                Settings.LastSendStatus = erro;
+                Settings.LastSendStatus = "Exceção: " + ex.Message;
                 IsConnected = false;
-                UpdateStatus(erro);
+                UpdateStatus("Erro: " + ex.Message);
                 SimHub.Logging.Current.Error("[PitLeague] Exceção: " + ex);
                 return false;
             }
         }
 
-        /// <summary>Testar conexão com a API (botão de teste na UI)</summary>
+        // ─── Test connection ──────────────────────────────────────────────────
+
         public async Task<bool> TestConnection()
         {
             if (string.IsNullOrEmpty(Settings.ApiKey))
             {
-                UpdateStatus("❌ API Key não configurada");
+                UpdateStatus("API Key não configurada");
                 return false;
             }
 
@@ -231,147 +254,99 @@ namespace PitLeague.SimHub
                 UpdateStatus("Testando conexão...");
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/api-keys";
 
-                _http.DefaultRequestHeaders.Clear();
-                _http.DefaultRequestHeaders.Add("Authorization", "Bearer " + Settings.ApiKey);
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
 
-                var response = await _http.GetAsync(url);
+                var response = await _http.SendAsync(request);
                 if (response.IsSuccessStatusCode)
                 {
                     IsConnected = true;
-                    UpdateStatus("✅ Conexão OK com o PitLeague");
+                    UpdateStatus("Conexão OK com o PitLeague");
                     return true;
                 }
                 else
                 {
                     IsConnected = false;
-                    UpdateStatus($"❌ API retornou {(int)response.StatusCode} — verifique a API Key");
+                    UpdateStatus($"API retornou {(int)response.StatusCode} — verifique a API Key");
                     return false;
                 }
             }
             catch (Exception ex)
             {
                 IsConnected = false;
-                UpdateStatus("❌ Sem conexão: " + ex.Message);
+                UpdateStatus("Sem conexão: " + ex.Message);
                 return false;
             }
         }
 
-        // ─── Construção do payload ────────────────────────────────────────────
+        // ─── Build payload from snapshot ──────────────────────────────────────
 
-        private PitLeaguePayload BuildPayload(PluginManager pluginManager, GameData data)
+        private PitLeaguePayload BuildPayloadFromSnapshot()
         {
-            var gameName  = Settings.GameDisplayName.Length > 0
-                ? Settings.GameDisplayName
-                : data.GameData?.GameName ?? "Unknown";
-            var trackName = data.GameData?.TrackName ?? "Unknown";
-            var totalLaps = (int)(data.GameData?.CompletedLaps ?? 0);
+            var results = new List<DriverResult>();
+            var fastestLapTime = TimeSpan.MaxValue;
+            int fastestLapIdx = -1;
 
-            var results = BuildResults(pluginManager, data);
+            // Find fastest lap
+            for (int i = 0; i < _lastOpponents.Count; i++)
+            {
+                var bl = _lastOpponents[i].BestLapTime;
+                if (bl.HasValue && bl.Value > TimeSpan.Zero && bl.Value < fastestLapTime)
+                {
+                    fastestLapTime = bl.Value;
+                    fastestLapIdx = i;
+                }
+            }
+
+            // Build results
+            for (int i = 0; i < _lastOpponents.Count; i++)
+            {
+                var o = _lastOpponents[i];
+                string bestLapStr = null;
+                if (o.BestLapTime.HasValue && o.BestLapTime.Value > TimeSpan.Zero)
+                {
+                    var t = o.BestLapTime.Value;
+                    bestLapStr = $"{(int)t.TotalMinutes}:{t.Seconds:D2}.{t.Milliseconds:D3}";
+                }
+
+                results.Add(new DriverResult
+                {
+                    Position = o.Position > 0 ? o.Position : (i + 1),
+                    Gamertag = o.Name.Trim(),
+                    Team = o.TeamName,
+                    Status = "Finished",
+                    BestLapTime = bestLapStr,
+                    FastestLap = (i == fastestLapIdx),
+                    PolePosition = false,
+                    PenaltySeconds = 0,
+                    Gap = o.Position == 1 ? "" : ""
+                });
+            }
+
+            results.Sort((a, b) => a.Position.CompareTo(b.Position));
+
+            // Determine session type for payload
+            var sessionType = "Race";
+            if (_lastSessionTypeName.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0)
+                sessionType = "Sprint";
 
             return new PitLeaguePayload
             {
-                Game       = gameName,
-                LeagueId   = Settings.LeagueId,
-                SessionUID = _currentSessionUID,
+                Game = _lastGameName,
+                LeagueId = Settings.LeagueId,
+                SessionUID = $"{_lastTrackName}_{DateTime.UtcNow:yyyyMMddHHmmss}",
                 CapturedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                Session    = new SessionData
+                Session = new SessionData
                 {
-                    Type      = data.GameData?.SessionTypeName ?? "Race",
-                    Track     = trackName,
-                    TotalLaps = totalLaps,
-                    Results   = results
+                    Type = sessionType,
+                    Track = _lastTrackName,
+                    TotalLaps = _lastTotalLaps,
+                    Results = results
                 }
             };
         }
 
-        private List<DriverResult> BuildResults(PluginManager pluginManager, GameData data)
-        {
-            var results = new List<DriverResult>();
-            var fastestLapTime = TimeSpan.MaxValue;
-            int fastestLapIdx  = -1;
-
-            // Descobrir a volta mais rápida para marcar FastestLap
-            var opponentsCount = data.OpponentsCount;
-            for (int i = 0; i < opponentsCount; i++)
-            {
-                var bestLap = GetOpponentProperty<TimeSpan>(pluginManager, i, "BestLapTime");
-                if (bestLap > TimeSpan.Zero && bestLap < fastestLapTime)
-                {
-                    fastestLapTime = bestLap;
-                    fastestLapIdx  = i;
-                }
-            }
-
-            // Construir lista de resultados
-            for (int i = 0; i < opponentsCount; i++)
-            {
-                var position  = GetOpponentProperty<int>(pluginManager, i, "Position");
-                var carName   = GetOpponentProperty<string>(pluginManager, i, "CarName")
-                             ?? GetOpponentProperty<string>(pluginManager, i, "DriverName")
-                             ?? $"Driver{i + 1}";
-                var teamName  = GetOpponentProperty<string>(pluginManager, i, "TeamName") ?? "";
-                var isRetired = GetOpponentProperty<bool>(pluginManager, i, "IsRetired");
-                var bestLap   = GetOpponentProperty<TimeSpan>(pluginManager, i, "BestLapTime");
-                var gap       = GetOpponentProperty<string>(pluginManager, i, "GapToLeader") ?? "";
-                var penalty   = GetOpponentProperty<double>(pluginManager, i, "PenaltyTime");
-
-                // Status
-                var status = "Finished";
-                if (isRetired)   status = "DNF";
-
-                // BestLapTime formatado
-                string bestLapStr = null;
-                if (bestLap > TimeSpan.Zero)
-                    bestLapStr = $"{(int)bestLap.TotalMinutes}:{bestLap.Seconds:D2}.{bestLap.Milliseconds:D3}";
-
-                results.Add(new DriverResult
-                {
-                    Position        = position > 0 ? position : (i + 1),
-                    Gamertag        = carName.Trim(),
-                    Team            = teamName,
-                    Status          = status,
-                    BestLapTime     = bestLapStr,
-                    FastestLap      = (i == fastestLapIdx),
-                    PolePosition    = (i == _polePositionIdx),
-                    PenaltySeconds  = (int)penalty,
-                    Gap             = status == "DNF" ? "DNF" : gap
-                });
-            }
-
-            // Ordenar por posição final
-            results.Sort((a, b) => a.Position.CompareTo(b.Position));
-            return results;
-        }
-
         // ─── Helpers ──────────────────────────────────────────────────────────
-
-        private T GetOpponentProperty<T>(PluginManager pm, int index, string property)
-        {
-            try
-            {
-                var value = pm.GetPropertyValue($"DataCorePlugin.Opponents[{index}].{property}");
-                if (value is T typed) return typed;
-                if (value != null)   return (T)Convert.ChangeType(value, typeof(T));
-            }
-            catch { }
-            return default;
-        }
-
-        private string GetSessionUID(PluginManager pm, GameData data)
-        {
-            // Tentar UID nativo do jogo (F1 25 tem sessionUID no pacote)
-            try
-            {
-                var uid = pm.GetPropertyValue("DataCorePlugin.GameRawData.SessionUID")?.ToString();
-                if (!string.IsNullOrEmpty(uid) && uid != "0") return uid;
-            }
-            catch { }
-
-            // Fallback: track + data como UID sintético
-            var track = data.GameData?.TrackName ?? "unknown";
-            var date  = DateTime.UtcNow.ToString("yyyyMMddHH");
-            return $"{track}_{date}";
-        }
 
         private void UpdateStatus(string message)
         {
@@ -380,16 +355,24 @@ namespace PitLeague.SimHub
             StatusChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        // ─── WPF Settings UI ──────────────────────────────────────────────────
+        // ─── WPF Settings ─────────────────────────────────────────────────────
 
         public System.Windows.Controls.Control GetWPFSettingsControl(PluginManager pluginManager)
         {
             return new SettingsControl(this);
         }
+    }
 
-        public System.Windows.Controls.Control GetWPFSettingsControlV2(PluginManager pluginManager)
-        {
-            return new SettingsControl(this);
-        }
+    // ─── Snapshot class (safe copy from Opponent, no ref issues) ──────────────
+
+    internal class OpponentSnapshot
+    {
+        public int Position { get; set; }
+        public string Name { get; set; }
+        public string TeamName { get; set; }
+        public string CarNumber { get; set; }
+        public TimeSpan? BestLapTime { get; set; }
+        public bool IsPlayer { get; set; }
+        public bool IsInPit { get; set; }
     }
 }
