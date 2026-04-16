@@ -16,7 +16,9 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <Nullable>disable</Nullable>
     <LangVersion>9.0</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
   </PropertyGroup>
 
   <!-- ─── Dependências NuGet ──────────────────────────────────────────────── -->
@@ -44,9 +46,12 @@
     </Reference>
   </ItemGroup>
 
-  <!-- ─── Arquivos do projeto (SDK auto-includes .cs files) ─────────────── -->
+  <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
   <ItemGroup>
-    <Compile Update="SettingsControl.xaml.cs">
+    <Compile Include="PitLeaguePlugin.cs"/>
+    <Compile Include="Settings.cs"/>
+    <Compile Include="Models.cs"/>
+    <Compile Include="SettingsControl.xaml.cs">
       <DependentUpon>SettingsControl.xaml</DependentUpon>
     </Compile>
     <Page Include="SettingsControl.xaml">
