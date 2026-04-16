@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -50,7 +49,7 @@ namespace PitLeague.SimHub
 
         public void Init(PluginManager pluginManager)
         {
-            global::SimHub.Logging.Current.Info("[PitLeague] Plugin iniciado v" + VERSION);
+            System.Diagnostics.Debug.WriteLine("[PitLeague] Plugin iniciado v" + VERSION);
 
             Settings = this.ReadCommonSettings<PitLeaguePluginSettings>(
                 "PitLeagueSettings",
@@ -68,7 +67,7 @@ namespace PitLeague.SimHub
         public void End(PluginManager pluginManager)
         {
             this.SaveCommonSettings("PitLeagueSettings", Settings);
-            global::SimHub.Logging.Current.Info("[PitLeague] Plugin encerrado");
+            System.Diagnostics.Debug.WriteLine("[PitLeague] Plugin encerrado");
         }
 
         // ─── DataUpdate — called every frame by SimHub ────────────────────────
@@ -111,7 +110,7 @@ namespace PitLeague.SimHub
                 ResultReadyToSend = false;
                 _lastOpponents = null;
                 if (Settings.DebugMode)
-                    global::SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + sessionType);
+                    System.Diagnostics.Debug.WriteLine("[PitLeague] Nova sessão de corrida detectada: " + sessionType);
             }
 
             _wasInRace = isRace;
@@ -125,30 +124,39 @@ namespace PitLeague.SimHub
             try
             {
                 _lastTrackName = data.NewData.TrackName ?? "Unknown";
-                _lastTotalLaps = data.NewData.TotalLaps;
+                try { _lastTotalLaps = data.NewData.TotalLaps; } catch { _lastTotalLaps = 0; }
                 _lastSessionTypeName = data.NewData.SessionTypeName ?? "Race";
                 _lastGameName = Settings.GameDisplayName.Length > 0
                     ? Settings.GameDisplayName
-                    : (data.GameName ?? "Unknown");
+                    : "Unknown";
+                // Try to get game name from GameData (may not exist in all SDK versions)
+                try { if (_lastGameName == "Unknown") _lastGameName = data.GameName ?? "Unknown"; } catch { }
 
                 var opponents = data.NewData.Opponents;
                 if (opponents == null || opponents.Count == 0) return;
 
-                _lastOpponents = opponents.Select(o => new OpponentSnapshot
+                _lastOpponents = new List<OpponentSnapshot>();
+                foreach (var o in opponents)
                 {
-                    Position = o.Position,
-                    Name = o.Name ?? "",
-                    TeamName = o.TeamName ?? "",
-                    CarNumber = o.CarNumber ?? "",
-                    BestLapTime = o.BestLapTime,
-                    IsPlayer = o.IsPlayer,
-                    IsInPit = false,
-                }).ToList();
+                    try
+                    {
+                        _lastOpponents.Add(new OpponentSnapshot
+                        {
+                            Position = o.Position,
+                            Name = o.Name ?? "",
+                            TeamName = o.TeamName ?? "",
+                            CarNumber = o.CarNumber?.ToString() ?? "",
+                            BestLapTime = o.BestLapTime,
+                            IsPlayer = o.IsPlayer,
+                        });
+                    }
+                    catch { /* skip opponent if property access fails */ }
+                }
             }
             catch (Exception ex)
             {
                 if (Settings.DebugMode)
-                    global::SimHub.Logging.Current.Error("[PitLeague] Snapshot error: " + ex.Message);
+                    System.Diagnostics.Debug.WriteLine("[PitLeague] Snapshot error: " + ex.Message);
             }
         }
 
@@ -216,7 +224,7 @@ namespace PitLeague.SimHub
                     PluginManager?.SetPropertyValue("PitLeague.LastSentAt", this.GetType(), DateTime.Now.ToString("dd/MM HH:mm"));
                     PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
 
-                    global::SimHub.Logging.Current.Info("[PitLeague] Resultado enviado" + matchInfo);
+                    System.Diagnostics.Debug.WriteLine("[PitLeague] Resultado enviado" + matchInfo);
                     return true;
                 }
                 else
@@ -225,7 +233,7 @@ namespace PitLeague.SimHub
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
                     UpdateStatus(erro);
-                    global::SimHub.Logging.Current.Error("[PitLeague] Falha: " + body);
+                    System.Diagnostics.Debug.WriteLine("[PitLeague] Falha: " + body);
                     return false;
                 }
             }
@@ -234,7 +242,7 @@ namespace PitLeague.SimHub
                 Settings.LastSendStatus = "Exceção: " + ex.Message;
                 IsConnected = false;
                 UpdateStatus("Erro: " + ex.Message);
-                global::SimHub.Logging.Current.Error("[PitLeague] Exceção: " + ex);
+                System.Diagnostics.Debug.WriteLine("[PitLeague] Exceção: " + ex);
                 return false;
             }
         }
@@ -373,6 +381,5 @@ namespace PitLeague.SimHub
         public string CarNumber { get; set; }
         public TimeSpan? BestLapTime { get; set; }
         public bool IsPlayer { get; set; }
-        public bool IsInPit { get; set; }
     }
 }
