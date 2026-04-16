@@ -32,16 +32,13 @@
       Se o SimHub estiver em outro diretório, ajuste SIMHUB_PATH abaixo.
       Padrão: C:\Program Files (x86)\SimHub\
     -->
+    <Reference Include="System.Net.Http" />
     <Reference Include="SimHub.Plugins">
       <HintPath>$(SIMHUB_PATH)\SimHub.Plugins.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="GameReaderCommon">
       <HintPath>$(SIMHUB_PATH)\GameReaderCommon.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="SimHub.Plugins.Common">
-      <HintPath>$(SIMHUB_PATH)\SimHub.Plugins.Common.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
