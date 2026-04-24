@@ -45,6 +45,10 @@
       <HintPath>$(SIMHUB_PATH)\SimHub.Logging.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="log4net">
+      <HintPath>$(SIMHUB_PATH)\log4net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
