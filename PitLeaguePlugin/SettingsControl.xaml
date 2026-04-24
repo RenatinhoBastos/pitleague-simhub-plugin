@@ -114,6 +114,16 @@
             <TextBlock x:Name="TxtReadyHint"
                        Text="⚠ Nenhuma corrida finalizada detectada nesta sessão."
                        Foreground="#888" FontSize="11" TextWrapping="Wrap"
+                       Margin="0,0,0,8"/>
+
+            <Button x:Name="BtnCaptureNow"
+                    Content="📸  Capturar Resultado Agora (spectator/broadcaster)"
+                    Background="#2B5797" Foreground="White" FontWeight="Bold"
+                    FontSize="12" Padding="12,10" BorderThickness="0"
+                    Click="BtnCaptureNow_Click" Cursor="Hand" Margin="0,0,0,4"
+                    ToolTip="Força captura do estado atual mesmo fora de Race. Útil para admins, broadcasters ou casos onde o jogo fechou antes da transição normal."/>
+            <TextBlock Text="Use se você é broadcaster/admin e o fim de corrida não foi detectado automaticamente."
+                       Foreground="#666" FontSize="10" TextWrapping="Wrap"
                        Margin="0,0,0,16"/>
 
             <!-- ─── Último envio ───────────────────────────────────────────── -->

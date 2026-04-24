@@ -134,6 +134,21 @@ namespace PitLeague.SimHub
             BtnTest.IsEnabled = true;
         }
 
+        private void BtnCaptureNow_Click(object sender, RoutedEventArgs e)
+        {
+            global::SimHub.Logging.Current.Info("[PitLeague] Botao 'Capturar Resultado Agora' clicado pelo usuario");
+
+            try
+            {
+                _plugin.ForceCaptureCurrentState();
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Error($"[PitLeague] Exception em CaptureNow: {ex.Message}");
+                MessageBox.Show($"Erro: {ex.Message}", "PitLeague", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private async void BtnSendResult_Click(object sender, RoutedEventArgs e)
         {
             global::SimHub.Logging.Current.Info("[PitLeague] Botao 'Enviar Resultado' clicado pelo usuario");

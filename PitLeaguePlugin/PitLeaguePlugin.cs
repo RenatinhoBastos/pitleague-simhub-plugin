@@ -15,7 +15,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.0.0";
+        public const string VERSION = "2.1.0";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -40,8 +40,16 @@ namespace PitLeague.SimHub
         private int _lastTotalLaps = 0;
         private string _lastSessionTypeName = "";
 
+        // Last received GameData (for ForceCaptureCurrentState)
+        private GameData _lastReceivedData;
+
         // Logging helpers (avoid spam)
         private int _lastLoggedOpponentCount = -1;
+
+        // Stall detection: timeout-based race end detection
+        private DateTime _lastValidDataInRace = DateTime.MinValue;
+        private bool _stallLogged = false;
+        private const int STALL_TIMEOUT_SECONDS = 10;
 
         // Heartbeat
         private System.Threading.Timer _heartbeatTimer;
@@ -103,7 +111,37 @@ namespace PitLeague.SimHub
 
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
         {
+            // ── Stall detection: race data stopped arriving ──────────────────
+            if (_wasInRace && (data.NewData == null || !data.GameRunning))
+            {
+                if (_lastValidDataInRace != DateTime.MinValue)
+                {
+                    var stalledSeconds = (DateTime.UtcNow - _lastValidDataInRace).TotalSeconds;
+
+                    if (!_stallLogged)
+                    {
+                        global::SimHub.Logging.Current.Info($"[PitLeague] Primeiro tick invalido em Race detectado | stalledSeconds={stalledSeconds:F1}");
+                        _stallLogged = true;
+                    }
+
+                    if (stalledSeconds >= STALL_TIMEOUT_SECONDS && !_resultSentThisSession)
+                    {
+                        global::SimHub.Logging.Current.Info($"[PitLeague] Stall detectado em Race por {stalledSeconds:F0}s — considerando corrida finalizada | opponents={_lastOpponents?.Count ?? 0}");
+                        TriggerResultReady("stall_timeout");
+                        _wasInRace = false;
+                        _lastValidDataInRace = DateTime.MinValue;
+                        _stallLogged = false;
+                        return;
+                    }
+                }
+                return;
+            }
+
+            // ── Original early return ────────────────────────────────────────
             if (data.NewData == null) return;
+
+            // Store last received data for ForceCaptureCurrentState
+            _lastReceivedData = data;
 
             var currentType = data.NewData.SessionTypeName ?? "";
             var isRace = currentType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
@@ -120,25 +158,20 @@ namespace PitLeague.SimHub
             if (isInRace)
             {
                 SnapshotData(data);
+
+                // Update stall detection timestamp
+                if (_lastValidDataInRace == DateTime.MinValue)
+                {
+                    global::SimHub.Logging.Current.Info("[PitLeague] Race ativa, monitorando stall timeout");
+                }
+                _lastValidDataInRace = DateTime.UtcNow;
+                _stallLogged = false;
             }
 
             // Detect transition: was in race → no longer in race
             if (_wasInRace && !isRace && !_resultSentThisSession)
             {
-                ResultReadyToSend = true;
-                pluginManager.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
-
-                global::SimHub.Logging.Current.Info($"[PitLeague] Corrida finalizada detectada | opponents={_lastOpponents?.Count ?? 0} | track={_lastTrackName ?? "null"} | AutoSend={Settings.AutoSendOnRaceEnd}");
-
-                if (Settings.AutoSendOnRaceEnd)
-                {
-                    UpdateStatus("Corrida finalizada! Enviando...");
-                    Task.Run(() => SendResultFromSnapshot());
-                }
-                else
-                {
-                    UpdateStatus("Corrida finalizada! Pronto para enviar.");
-                }
+                TriggerResultReady("session_transition");
             }
 
             // Detect new race session (reset state)
@@ -148,11 +181,66 @@ namespace PitLeague.SimHub
                 ResultReadyToSend = false;
                 _lastOpponents = null;
                 _lastLoggedOpponentCount = -1;
+                _lastValidDataInRace = DateTime.MinValue;
+                _stallLogged = false;
                 global::SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + currentType);
             }
 
             _wasInRace = isRace;
             _lastSessionType = currentType;
+        }
+
+        // ─── TriggerResultReady (centralized) ────────────────────────────────
+
+        private void TriggerResultReady(string reason)
+        {
+            if (_resultSentThisSession) return;
+
+            global::SimHub.Logging.Current.Info($"[PitLeague] TriggerResultReady: reason={reason} | opponents={_lastOpponents?.Count ?? 0} | track={_lastTrackName ?? "null"}");
+
+            ResultReadyToSend = true;
+            PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
+
+            if (Settings.AutoSendOnRaceEnd)
+            {
+                UpdateStatus("Corrida finalizada! Enviando...");
+                _ = Task.Run(async () => await SendResultFromSnapshot().ConfigureAwait(false));
+            }
+            else
+            {
+                UpdateStatus("Corrida finalizada! Pronto para enviar.");
+            }
+        }
+
+        // ─── Force capture (for broadcasters/admins) ─────────────────────────
+
+        public void ForceCaptureCurrentState()
+        {
+            global::SimHub.Logging.Current.Info("[PitLeague] ForceCaptureCurrentState chamado — capturando estado atual");
+
+            // If we have a valid snapshot from earlier, use it
+            if (_lastOpponents != null && _lastOpponents.Count > 0)
+            {
+                global::SimHub.Logging.Current.Info($"[PitLeague] Usando snapshot existente: {_lastOpponents.Count} pilotos");
+                TriggerResultReady("manual_capture_existing_snapshot");
+                return;
+            }
+
+            // Try to force a snapshot from last received GameData
+            if (_lastReceivedData.NewData != null)
+            {
+                global::SimHub.Logging.Current.Info("[PitLeague] Sem snapshot previo — forcando SnapshotData do estado atual");
+                SnapshotData(_lastReceivedData);
+
+                if (_lastOpponents != null && _lastOpponents.Count > 0)
+                {
+                    TriggerResultReady("manual_capture_forced_snapshot");
+                    return;
+                }
+            }
+
+            global::SimHub.Logging.Current.Warn("[PitLeague] ForceCaptureCurrentState falhou — nenhum dado de opponents disponivel");
+            UpdateStatus("Sem dados de corrida disponíveis para capturar.");
         }
 
         // ─── Snapshot opponents (safe copy from ref GameData) ─────────────────
@@ -353,7 +441,6 @@ namespace PitLeague.SimHub
         {
             try
             {
-                // Se plugin não está configurado, pula silenciosamente
                 if (string.IsNullOrWhiteSpace(Settings?.ApiKey) ||
                     string.IsNullOrWhiteSpace(Settings?.LeagueId) ||
                     string.IsNullOrWhiteSpace(Settings?.ApiBaseUrl))
@@ -396,7 +483,6 @@ namespace PitLeague.SimHub
             }
             catch (Exception ex)
             {
-                // NUNCA derrubar o plugin por causa de heartbeat
                 global::SimHub.Logging.Current.Warn($"[PitLeague] Heartbeat excecao: {ex.GetType().Name}: {ex.Message}");
             }
         }
@@ -409,7 +495,6 @@ namespace PitLeague.SimHub
             var fastestLapTime = TimeSpan.MaxValue;
             int fastestLapIdx = -1;
 
-            // Find fastest lap
             for (int i = 0; i < _lastOpponents.Count; i++)
             {
                 var bl = _lastOpponents[i].BestLapTime;
@@ -420,7 +505,6 @@ namespace PitLeague.SimHub
                 }
             }
 
-            // Build results
             for (int i = 0; i < _lastOpponents.Count; i++)
             {
                 var o = _lastOpponents[i];
@@ -447,7 +531,6 @@ namespace PitLeague.SimHub
 
             results.Sort((a, b) => a.Position.CompareTo(b.Position));
 
-            // Determine session type for payload
             var sessionType = "Race";
             if (_lastSessionTypeName.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0)
                 sessionType = "Sprint";
