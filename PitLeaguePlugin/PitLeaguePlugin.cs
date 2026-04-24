@@ -15,7 +15,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "1.0.0";
+        public const string VERSION = "2.0.0";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -27,6 +27,7 @@ namespace PitLeague.SimHub
 
         // ─── Internal state ───────────────────────────────────────────────────
         private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        private static readonly HttpClient _heartbeatHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
         private string _lastSessionType = "";
         private bool _wasInRace = false;
@@ -39,18 +40,30 @@ namespace PitLeague.SimHub
         private int _lastTotalLaps = 0;
         private string _lastSessionTypeName = "";
 
+        // Logging helpers (avoid spam)
+        private int _lastLoggedOpponentCount = -1;
+
+        // Heartbeat
+        private System.Threading.Timer _heartbeatTimer;
+
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
         public bool IsConnected { get; private set; } = false;
         public bool ResultReadyToSend { get; private set; } = false;
         public event EventHandler StatusChanged;
 
+        // ─── Helpers ──────────────────────────────────────────────────────────
+
+        private static string MaskKey(string key)
+        {
+            if (string.IsNullOrEmpty(key) || key.Length < 12) return "***";
+            return key.Substring(0, 8) + "...";
+        }
+
         // ─── Init ─────────────────────────────────────────────────────────────
 
         public void Init(PluginManager pluginManager)
         {
-            System.Diagnostics.Debug.WriteLine("[PitLeague] Plugin iniciado v" + VERSION);
-
             Settings = this.ReadCommonSettings<PitLeaguePluginSettings>(
                 "PitLeagueSettings",
                 () => new PitLeaguePluginSettings()
@@ -61,13 +74,29 @@ namespace PitLeague.SimHub
             pluginManager.AddProperty("PitLeague.LastSentAt", this.GetType(), "");
             pluginManager.AddProperty("PitLeague.ResultReadyToSend", this.GetType(), false);
 
+            // Heartbeat: primeiro envio em 5s, depois a cada 30s
+            _heartbeatTimer = new System.Threading.Timer(
+                callback: _ => SendHeartbeatSafe(),
+                state: null,
+                dueTime: TimeSpan.FromSeconds(5),
+                period: TimeSpan.FromSeconds(30)
+            );
+
             UpdateStatus("Plugin PitLeague v" + VERSION + " iniciado");
+
+            SimHub.Logging.Current.Info($"[PitLeague] Plugin iniciado v{VERSION} | ApiUrl={Settings.ApiBaseUrl} | LeagueId={Settings.LeagueId ?? "(vazio)"} | ApiKey={MaskKey(Settings.ApiKey)} | AutoSend={Settings.AutoSendOnRaceEnd}");
+            SimHub.Logging.Current.Info("[PitLeague] Heartbeat timer iniciado (30s interval)");
         }
 
         public void End(PluginManager pluginManager)
         {
+            SimHub.Logging.Current.Info("[PitLeague] Plugin encerrado");
+
+            _heartbeatTimer?.Dispose();
+            _heartbeatTimer = null;
+            SimHub.Logging.Current.Info("[PitLeague] Heartbeat timer encerrado");
+
             this.SaveCommonSettings("PitLeagueSettings", Settings);
-            System.Diagnostics.Debug.WriteLine("[PitLeague] Plugin encerrado");
         }
 
         // ─── DataUpdate — called every frame by SimHub ────────────────────────
@@ -76,12 +105,19 @@ namespace PitLeague.SimHub
         {
             if (data.NewData == null) return;
 
-            var sessionType = data.NewData.SessionTypeName ?? "";
-            var isRace = sessionType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
-                      || sessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+            var currentType = data.NewData.SessionTypeName ?? "";
+            var isRace = currentType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
+                      || currentType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+            var isInRace = isRace && data.GameRunning;
+
+            // Log session type transitions (not every tick)
+            if (currentType != _lastSessionType)
+            {
+                SimHub.Logging.Current.Info($"[PitLeague] Transicao session: '{_lastSessionType}' -> '{currentType}' | isInRace={isInRace} | wasInRace={_wasInRace} | GameRunning={data.GameRunning}");
+            }
 
             // While in race, keep snapshotting data (we need it when race ends)
-            if (isRace && data.GameRunning)
+            if (isInRace)
             {
                 SnapshotData(data);
             }
@@ -91,6 +127,8 @@ namespace PitLeague.SimHub
             {
                 ResultReadyToSend = true;
                 pluginManager.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
+
+                SimHub.Logging.Current.Info($"[PitLeague] Corrida finalizada detectada | opponents={_lastOpponents?.Count ?? 0} | track={_lastTrackName ?? "null"} | AutoSend={Settings.AutoSendOnRaceEnd}");
 
                 if (Settings.AutoSendOnRaceEnd)
                 {
@@ -109,12 +147,12 @@ namespace PitLeague.SimHub
                 _resultSentThisSession = false;
                 ResultReadyToSend = false;
                 _lastOpponents = null;
-                if (Settings.DebugMode)
-                    System.Diagnostics.Debug.WriteLine("[PitLeague] Nova sessão de corrida detectada: " + sessionType);
+                _lastLoggedOpponentCount = -1;
+                SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + currentType);
             }
 
             _wasInRace = isRace;
-            _lastSessionType = sessionType;
+            _lastSessionType = currentType;
         }
 
         // ─── Snapshot opponents (safe copy from ref GameData) ─────────────────
@@ -152,11 +190,17 @@ namespace PitLeague.SimHub
                     }
                     catch { /* skip opponent if property access fails */ }
                 }
+
+                // Log when opponent count changes (avoid spam)
+                if (_lastOpponents.Count != _lastLoggedOpponentCount)
+                {
+                    _lastLoggedOpponentCount = _lastOpponents.Count;
+                    SimHub.Logging.Current.Info($"[PitLeague] Snapshot capturado: {_lastOpponents.Count} pilotos | track={_lastTrackName} | session={_lastSessionTypeName} | laps={_lastTotalLaps}");
+                }
             }
             catch (Exception ex)
             {
-                if (Settings.DebugMode)
-                    System.Diagnostics.Debug.WriteLine("[PitLeague] Snapshot error: " + ex.Message);
+                SimHub.Logging.Current.Warn("[PitLeague] Snapshot error: " + ex.Message);
             }
         }
 
@@ -167,16 +211,19 @@ namespace PitLeague.SimHub
             if (string.IsNullOrEmpty(Settings.ApiKey))
             {
                 UpdateStatus("API Key não configurada");
+                SimHub.Logging.Current.Warn("[PitLeague] SendResult abortado: API Key não configurada");
                 return false;
             }
             if (string.IsNullOrEmpty(Settings.LeagueId))
             {
                 UpdateStatus("League ID não configurado");
+                SimHub.Logging.Current.Warn("[PitLeague] SendResult abortado: League ID não configurado");
                 return false;
             }
             if (_lastOpponents == null || _lastOpponents.Count == 0)
             {
                 UpdateStatus("Nenhum dado de corrida capturado");
+                SimHub.Logging.Current.Warn("[PitLeague] SendResult abortado: nenhum dado de corrida capturado");
                 return false;
             }
 
@@ -188,14 +235,17 @@ namespace PitLeague.SimHub
                 if (payload.Session.Results.Count < Settings.MinDriversToSend)
                 {
                     UpdateStatus($"Apenas {payload.Session.Results.Count} pilotos (mínimo: {Settings.MinDriversToSend})");
+                    SimHub.Logging.Current.Warn($"[PitLeague] SendResult abortado: {payload.Session.Results.Count} pilotos < mínimo {Settings.MinDriversToSend}");
                     return false;
                 }
+
+                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
+                SimHub.Logging.Current.Info($"[PitLeague] Enviando resultado: {payload.Session.Results.Count} pilotos para {url}");
 
                 UpdateStatus($"Enviando {payload.Session.Results.Count} pilotos...");
 
                 var json = JsonConvert.SerializeObject(payload);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
 
                 var request = new HttpRequestMessage(HttpMethod.Post, url);
                 request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
@@ -224,7 +274,7 @@ namespace PitLeague.SimHub
                     PluginManager?.SetPropertyValue("PitLeague.LastSentAt", this.GetType(), DateTime.Now.ToString("dd/MM HH:mm"));
                     PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
 
-                    System.Diagnostics.Debug.WriteLine("[PitLeague] Resultado enviado" + matchInfo);
+                    SimHub.Logging.Current.Info($"[PitLeague] Resultado enviado OK | HTTP {(int)response.StatusCode} | matched={result?.Matched ?? 0}/{result?.Total ?? 0}");
                     return true;
                 }
                 else
@@ -233,7 +283,7 @@ namespace PitLeague.SimHub
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
                     UpdateStatus(erro);
-                    System.Diagnostics.Debug.WriteLine("[PitLeague] Falha: " + body);
+                    SimHub.Logging.Current.Warn($"[PitLeague] Falha no envio | HTTP {(int)response.StatusCode} | body={body.Substring(0, Math.Min(200, body.Length))}");
                     return false;
                 }
             }
@@ -242,7 +292,7 @@ namespace PitLeague.SimHub
                 Settings.LastSendStatus = "Exceção: " + ex.Message;
                 IsConnected = false;
                 UpdateStatus("Erro: " + ex.Message);
-                System.Diagnostics.Debug.WriteLine("[PitLeague] Exceção: " + ex);
+                SimHub.Logging.Current.Error($"[PitLeague] Excecao em SendResultFromSnapshot: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         }
@@ -254,13 +304,15 @@ namespace PitLeague.SimHub
             if (string.IsNullOrEmpty(Settings.ApiKey))
             {
                 UpdateStatus("API Key não configurada");
+                SimHub.Logging.Current.Warn("[PitLeague] TestConnection: API Key não configurada");
                 return false;
             }
 
             try
             {
-                UpdateStatus("Testando conexão...");
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/test";
+                SimHub.Logging.Current.Info($"[PitLeague] TestConnection: GET {url}");
+                UpdateStatus("Testando conexão...");
 
                 var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
@@ -274,6 +326,7 @@ namespace PitLeague.SimHub
                     string league = json["league"]?.ToString() ?? "";
                     IsConnected = true;
                     UpdateStatus(league.Length > 0 ? $"Conectado à liga: {league}" : "Conexão OK com o PitLeague");
+                    SimHub.Logging.Current.Info($"[PitLeague] TestConnection OK | liga={league}");
                     return true;
                 }
                 else
@@ -281,7 +334,7 @@ namespace PitLeague.SimHub
                     IsConnected = false;
                     var snippet = body.Length > 150 ? body.Substring(0, 150) : body;
                     UpdateStatus($"Erro {(int)response.StatusCode}: {snippet}");
-                    System.Diagnostics.Debug.WriteLine($"[PitLeague] Test failed: {(int)response.StatusCode} {body}");
+                    SimHub.Logging.Current.Warn($"[PitLeague] TestConnection falhou | HTTP {(int)response.StatusCode} | body={body.Substring(0, Math.Min(200, body.Length))}");
                     return false;
                 }
             }
@@ -289,7 +342,62 @@ namespace PitLeague.SimHub
             {
                 IsConnected = false;
                 UpdateStatus("Sem conexão: " + ex.Message);
+                SimHub.Logging.Current.Error($"[PitLeague] TestConnection excecao: {ex.GetType().Name}: {ex.Message}");
                 return false;
+            }
+        }
+
+        // ─── Heartbeat (fire-and-forget, fail-safe) ───────────────────────────
+
+        private async void SendHeartbeatSafe()
+        {
+            try
+            {
+                // Se plugin não está configurado, pula silenciosamente
+                if (string.IsNullOrWhiteSpace(Settings?.ApiKey) ||
+                    string.IsNullOrWhiteSpace(Settings?.LeagueId) ||
+                    string.IsNullOrWhiteSpace(Settings?.ApiBaseUrl))
+                {
+                    return;
+                }
+
+                var payload = new
+                {
+                    league_id = Settings.LeagueId,
+                    hostname = System.Environment.MachineName,
+                    plugin_version = VERSION,
+                    game_name = _lastGameName.Length > 0 ? _lastGameName : (Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : "Unknown"),
+                    udp_listening = false,
+                    metadata = new
+                    {
+                        os = System.Environment.OSVersion.VersionString,
+                        captured_laps = _lastTotalLaps,
+                        captured_track = _lastTrackName
+                    }
+                };
+
+                var json = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/heartbeat"
+                );
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Settings.ApiKey}");
+                request.Content = content;
+
+                var response = await _heartbeatHttpClient.SendAsync(request).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    SimHub.Logging.Current.Warn($"[PitLeague] Heartbeat falhou HTTP {(int)response.StatusCode}: {body.Substring(0, Math.Min(200, body.Length))}");
+                }
+            }
+            catch (Exception ex)
+            {
+                // NUNCA derrubar o plugin por causa de heartbeat
+                SimHub.Logging.Current.Warn($"[PitLeague] Heartbeat excecao: {ex.GetType().Name}: {ex.Message}");
             }
         }
 

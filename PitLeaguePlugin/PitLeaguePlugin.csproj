@@ -5,7 +5,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>PitLeaguePlugin</AssemblyName>
     <RootNamespace>PitLeague.SimHub</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>2.0.0</Version>
     <Authors>PitLeague</Authors>
     <Description>Plugin SimHub para enviar resultados de corrida ao PitLeague</Description>
     <!-- 
