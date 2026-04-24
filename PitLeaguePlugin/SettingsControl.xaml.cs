@@ -126,7 +126,7 @@ namespace PitLeague.SimHub
 
         private async void BtnTest_Click(object sender, RoutedEventArgs e)
         {
-            SimHub.Logging.Current.Info("[PitLeague] Botao 'Testar Conexao' clicado pelo usuario");
+            global::SimHub.Logging.Current.Info("[PitLeague] Botao 'Testar Conexao' clicado pelo usuario");
             BtnTest.IsEnabled = false;
             BtnTest.Content = "...";
             await _plugin.TestConnection();
@@ -136,7 +136,7 @@ namespace PitLeague.SimHub
 
         private async void BtnSendResult_Click(object sender, RoutedEventArgs e)
         {
-            SimHub.Logging.Current.Info("[PitLeague] Botao 'Enviar Resultado' clicado pelo usuario");
+            global::SimHub.Logging.Current.Info("[PitLeague] Botao 'Enviar Resultado' clicado pelo usuario");
             if (!_plugin.ResultReadyToSend)
             {
                 MessageBox.Show(
