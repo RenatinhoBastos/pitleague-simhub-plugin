@@ -41,6 +41,10 @@
       <HintPath>$(SIMHUB_PATH)\GameReaderCommon.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="SimHub.Logging">
+      <HintPath>$(SIMHUB_PATH)\SimHub.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
