@@ -24,6 +24,11 @@ import argparse
 import sys
 import threading
 
+# Force UTF-8 stdout on Windows (cp1252 can't encode box-drawing chars)
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # ─── F1 25 UDP Protocol Constants ─────────────────────────────────────────────
 
 PACKET_FORMAT = 2025

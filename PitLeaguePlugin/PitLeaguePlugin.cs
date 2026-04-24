@@ -15,7 +15,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.1.0";
+        public const string VERSION = "2.1.1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -216,31 +216,40 @@ namespace PitLeague.SimHub
 
         public void ForceCaptureCurrentState()
         {
-            global::SimHub.Logging.Current.Info("[PitLeague] ForceCaptureCurrentState chamado — capturando estado atual");
+            global::SimHub.Logging.Current.Info("[PitLeague] ForceCaptureCurrentState entrada");
 
-            // If we have a valid snapshot from earlier, use it
-            if (_lastOpponents != null && _lastOpponents.Count > 0)
+            try
             {
-                global::SimHub.Logging.Current.Info($"[PitLeague] Usando snapshot existente: {_lastOpponents.Count} pilotos");
-                TriggerResultReady("manual_capture_existing_snapshot");
-                return;
-            }
-
-            // Try to force a snapshot from last received GameData
-            if (_lastReceivedData.NewData != null)
-            {
-                global::SimHub.Logging.Current.Info("[PitLeague] Sem snapshot previo — forcando SnapshotData do estado atual");
-                SnapshotData(_lastReceivedData);
-
+                // If we have a valid snapshot from earlier, use it
                 if (_lastOpponents != null && _lastOpponents.Count > 0)
                 {
-                    TriggerResultReady("manual_capture_forced_snapshot");
+                    global::SimHub.Logging.Current.Info($"[PitLeague] Usando snapshot existente: {_lastOpponents.Count} pilotos");
+                    TriggerResultReady("manual_capture_existing_snapshot");
                     return;
                 }
-            }
 
-            global::SimHub.Logging.Current.Warn("[PitLeague] ForceCaptureCurrentState falhou — nenhum dado de opponents disponivel");
-            UpdateStatus("Sem dados de corrida disponíveis para capturar.");
+                // Try to force a snapshot from last received GameData
+                if (_lastReceivedData.NewData != null && _lastReceivedData.NewData.Opponents != null && _lastReceivedData.NewData.Opponents.Count > 0)
+                {
+                    global::SimHub.Logging.Current.Info($"[PitLeague] Sem snapshot previo — forcando SnapshotData | opponents={_lastReceivedData.NewData.Opponents.Count}");
+                    SnapshotData(_lastReceivedData);
+
+                    if (_lastOpponents != null && _lastOpponents.Count > 0)
+                    {
+                        TriggerResultReady("manual_capture_forced_snapshot");
+                        return;
+                    }
+                }
+
+                global::SimHub.Logging.Current.Warn("[PitLeague] ForceCaptureCurrentState: nenhum dado disponivel (sem jogo ativo ou sem opponents)");
+                UpdateStatus("Sem dados de corrida disponíveis. Inicie um jogo primeiro.");
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Error($"[PitLeague] Exception em ForceCaptureCurrentState: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                UpdateStatus($"Erro interno: {ex.GetType().Name}");
+                throw;
+            }
         }
 
         // ─── Snapshot opponents (safe copy from ref GameData) ─────────────────
