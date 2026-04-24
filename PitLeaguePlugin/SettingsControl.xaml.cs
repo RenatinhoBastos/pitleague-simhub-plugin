@@ -144,8 +144,11 @@ namespace PitLeague.SimHub
             }
             catch (Exception ex)
             {
-                global::SimHub.Logging.Current.Error($"[PitLeague] Exception em CaptureNow: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
-                MessageBox.Show($"Erro: {ex.GetType().Name}: {ex.Message}", "PitLeague", MessageBoxButton.OK, MessageBoxImage.Error);
+                var fullError = $"{ex.GetType().Name}: {ex.Message}\n\nStackTrace:\n{ex.StackTrace}";
+                if (ex.InnerException != null)
+                    fullError += $"\n\nInner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}";
+                global::SimHub.Logging.Current.Error($"[PitLeague] Exception em CaptureNow: {fullError}");
+                MessageBox.Show(fullError, "PitLeague — Debug Stack Trace", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
