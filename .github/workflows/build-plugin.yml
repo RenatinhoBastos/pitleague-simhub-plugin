@@ -60,7 +60,7 @@ jobs:
 
             ### Como instalar
             1. Baixe `PitLeaguePlugin.dll` abaixo
-            2. Copie para `C:\Program Files (x86)\SimHub\PluginManager\plugins\`
+            2. Copie para `C:\Program Files (x86)\SimHub\`
             3. Reinicie o SimHub
             4. Vá em Settings → Plugins → ative "PitLeague Telemetry"
             5. Configure API Key e League ID nas configurações do plugin
