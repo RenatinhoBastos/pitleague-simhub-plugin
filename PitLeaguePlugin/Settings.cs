@@ -39,6 +39,11 @@ namespace PitLeague.SimHub
         /// <summary>Mostrar logs detalhados no SimHub</summary>
         public bool DebugMode { get; set; } = false;
 
+        // ─── F1 25 UDP ───────────────────────────────────────────────────────
+
+        /// <summary>Porta UDP para receber telemetria do F1 25 (padrão: 20777)</summary>
+        public int F1_25_UdpPort { get; set; } = 20777;
+
         // ─── Estado interno (não configurável pelo usuário) ────────────────────
 
         /// <summary>SessionUID da última sessão enviada (evita duplicatas)</summary>
