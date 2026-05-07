@@ -624,7 +624,7 @@ namespace PitLeague.SimHub
 
     // ─── Snapshot class (safe copy from Opponent, no ref issues) ──────────────
 
-    internal class OpponentSnapshot
+    public class OpponentSnapshot
     {
         public int Position { get; set; }
         public string Name { get; set; }
