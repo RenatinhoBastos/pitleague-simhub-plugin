@@ -41,8 +41,20 @@ namespace PitLeague.SimHub
 
         // ─── F1 25 UDP ───────────────────────────────────────────────────────
 
-        /// <summary>Porta UDP para receber telemetria do F1 25 (padrão: 20777)</summary>
+        // LEGACY — kept for migration logic, ignored after first run
         public int F1_25_UdpPort { get; set; } = 20777;
+
+        /// <summary>Porta onde o plugin escuta UDP do jogo (default 20778, livre de SimHub)</summary>
+        public int F1_25_UdpListenPort { get; set; } = 20778;
+
+        /// <summary>Porta para onde o plugin reencaminha pacotes (default 20777, onde SimHub escuta)</summary>
+        public int F1_25_UdpForwardPort { get; set; } = 20777;
+
+        /// <summary>Habilita forward para SimHub. Default true.</summary>
+        public bool F1_25_UdpForwardEnabled { get; set; } = true;
+
+        /// <summary>Flag one-shot: migration de settings antigas já rodou</summary>
+        public bool F1_25_UdpSettingsMigrated { get; set; } = false;
 
         // ─── Estado interno (não configurável pelo usuário) ────────────────────
 

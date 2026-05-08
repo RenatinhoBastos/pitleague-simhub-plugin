@@ -31,6 +31,11 @@ namespace PitLeague.SimHub
             ChkDebug.IsChecked = s.DebugMode;
             TxtVersion.Text = " v" + PitLeaguePlugin.VERSION;
 
+            TxtUdpListenPort.Text = s.F1_25_UdpListenPort.ToString();
+            TxtUdpForwardPort.Text = s.F1_25_UdpForwardPort.ToString();
+            ChkUdpForward.IsChecked = s.F1_25_UdpForwardEnabled;
+            UpdateUdpWarning();
+
             foreach (ComboBoxItem item in CmbGame.Items)
             {
                 if (item.Content.ToString().StartsWith(s.GameDisplayName))
@@ -122,6 +127,47 @@ namespace PitLeague.SimHub
             if (_loading) return;
             if (int.TryParse(TxtMinDrivers.Text, out int val) && val > 0)
                 _plugin.Settings.MinDriversToSend = val;
+        }
+
+        private void TxtUdpListenPort_Changed(object sender, TextChangedEventArgs e)
+        {
+            if (_loading) return;
+            if (int.TryParse(TxtUdpListenPort.Text, out int val) && val > 0 && val <= 65535)
+                _plugin.Settings.F1_25_UdpListenPort = val;
+            UpdateUdpWarning();
+        }
+
+        private void TxtUdpForwardPort_Changed(object sender, TextChangedEventArgs e)
+        {
+            if (_loading) return;
+            if (int.TryParse(TxtUdpForwardPort.Text, out int val) && val > 0 && val <= 65535)
+                _plugin.Settings.F1_25_UdpForwardPort = val;
+            UpdateUdpWarning();
+        }
+
+        private void ChkUdpForward_Click(object sender, RoutedEventArgs e)
+        {
+            if (_loading) return;
+            _plugin.Settings.F1_25_UdpForwardEnabled = ChkUdpForward.IsChecked == true;
+        }
+
+        private void UpdateUdpWarning()
+        {
+            if (TxtUdpWarning == null) return;
+            int listen = 0, forward = 0;
+            int.TryParse(TxtUdpListenPort?.Text, out listen);
+            int.TryParse(TxtUdpForwardPort?.Text, out forward);
+
+            if (listen > 0 && listen == forward)
+            {
+                TxtUdpWarning.Text = "⚠ Listen and Forward ports must be different!";
+                TxtUdpWarning.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE5, 0x39, 0x35));
+            }
+            else
+            {
+                TxtUdpWarning.Text = $"⚙ F1 25 → Settings → Telemetry → UDP Port = {listen}.  SimHub → Game Config → UDP Port = {forward}.";
+                TxtUdpWarning.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xB8, 0x86, 0x0B));
+            }
         }
 
         private async void BtnTest_Click(object sender, RoutedEventArgs e)

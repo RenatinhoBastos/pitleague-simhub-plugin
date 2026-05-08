@@ -20,7 +20,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.2.0";
+        public const string VERSION = "2.3.0";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -80,6 +80,35 @@ namespace PitLeague.SimHub
             return key.Substring(0, 8) + "...";
         }
 
+        // ─── Settings migration ──────────────────────────────────────────────
+
+        private void MigrateUdpSettingsIfNeeded(PitLeaguePluginSettings settings)
+        {
+            if (settings.F1_25_UdpSettingsMigrated) return;
+
+            if (settings.F1_25_UdpPort == 0 || settings.F1_25_UdpPort == 20777)
+            {
+                settings.F1_25_UdpListenPort = 20778;
+                settings.F1_25_UdpForwardPort = 20777;
+                settings.F1_25_UdpForwardEnabled = true;
+                global::SimHub.Logging.Current.Info(
+                    "[PitLeague] Migrated UDP config: listen=20778, forward=20777 (relay mode). " +
+                    "Update F1 25: UDP Port = 20778.");
+            }
+            else
+            {
+                settings.F1_25_UdpListenPort = settings.F1_25_UdpPort;
+                settings.F1_25_UdpForwardPort = 20777;
+                settings.F1_25_UdpForwardEnabled = true;
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Preserved custom UDP listen port {settings.F1_25_UdpPort}, " +
+                    "added forward to :20777.");
+            }
+
+            settings.F1_25_UdpSettingsMigrated = true;
+            this.SaveCommonSettings("PitLeagueSettings", settings);
+        }
+
         // ─── Init ─────────────────────────────────────────────────────────────
 
         public void Init(PluginManager pluginManager)
@@ -95,35 +124,34 @@ namespace PitLeague.SimHub
             pluginManager.AddProperty("PitLeague.ResultReadyToSend", this.GetType(), false);
             pluginManager.AddProperty("PitLeague.ActiveAdapter", this.GetType(), "");
 
+            // Migrate UDP settings from v2.2.0 (single port) to v2.3.0 (listen + forward)
+            MigrateUdpSettingsIfNeeded(Settings);
+
             // Initialize adapters: specific first, generic as fallback
-            _f125Adapter = new F1_25_UdpAdapter(Settings.F1_25_UdpPort);
+            _f125Adapter = new F1_25_UdpAdapter(
+                Settings.F1_25_UdpListenPort,
+                Settings.F1_25_UdpForwardPort,
+                Settings.F1_25_UdpForwardEnabled
+            );
             _genericAdapter = new GenericSimHubAdapter(
                 Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : "Unknown"
             );
 
             _adapters = new List<IGameTelemetryAdapter> { _f125Adapter, _genericAdapter };
 
-            // Try to activate the first available specific adapter
-            _activeAdapter = _genericAdapter; // fallback default
-            foreach (var adapter in _adapters)
+            // Try to activate the F1 25 adapter; fall back to generic
+            _activeAdapter = _genericAdapter;
+            if (_f125Adapter.Start())
             {
-                if (adapter == _genericAdapter) continue; // skip fallback in priority loop
-                try
-                {
-                    if (adapter.IsAvailable())
-                    {
-                        adapter.Start();
-                        _activeAdapter = adapter;
-                        global::SimHub.Logging.Current.Info(
-                            $"[PitLeague] Adapter '{adapter.AdapterId}' ativado com sucesso");
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    global::SimHub.Logging.Current.Warn(
-                        $"[PitLeague] Adapter '{adapter.AdapterId}' falhou ao iniciar: {ex.Message}");
-                }
+                _activeAdapter = _f125Adapter;
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Adapter 'f125' ativado: listen={Settings.F1_25_UdpListenPort}, " +
+                    $"forward={(_f125Adapter.ForwardEnabled ? Settings.F1_25_UdpForwardPort.ToString() : "OFF")}");
+            }
+            else
+            {
+                global::SimHub.Logging.Current.Warn(
+                    "[PitLeague] F1 25 UDP adapter failed to start — using GenericSimHubAdapter fallback");
             }
 
             pluginManager.SetPropertyValue("PitLeague.ActiveAdapter", this.GetType(), _activeAdapter.AdapterId);
@@ -556,6 +584,7 @@ namespace PitLeague.SimHub
                     string.IsNullOrWhiteSpace(Settings?.ApiBaseUrl))
                     return;
 
+                var f125 = _activeAdapter as F1_25_UdpAdapter;
                 var payload = new
                 {
                     league_id = Settings.LeagueId,
@@ -563,9 +592,14 @@ namespace PitLeague.SimHub
                     plugin_version = VERSION,
                     game_name = _lastGameName.Length > 0 ? _lastGameName
                         : (Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : "Unknown"),
-                    udp_listening = _activeAdapter is F1_25_UdpAdapter,
+                    udp_listening = f125?.IsListening ?? false,
                     active_adapter = _activeAdapter?.AdapterId ?? "none",
                     schema_version = _activeAdapter?.SchemaVersion ?? "unknown",
+                    udp_listen_port = f125?.ListenPort ?? 0,
+                    udp_forward_port = f125?.ForwardPort ?? 0,
+                    udp_forward_enabled = f125?.ForwardEnabled ?? false,
+                    udp_forward_packets_sent = f125?.ForwardPacketsSent ?? 0,
+                    udp_forward_errors = f125?.ForwardErrors ?? 0,
                     metadata = new
                     {
                         os = System.Environment.OSVersion.VersionString,

@@ -11,9 +11,9 @@ using PitLeague.SimHub.Adapters.F1_25.Udp;
 namespace PitLeague.SimHub.Adapters.F1_25
 {
     /// <summary>
-    /// F1 25 UDP telemetry adapter. Captures rich race data directly from F1 25's UDP stream.
-    /// Covers F1, F2, F3 (same game engine, same UDP format).
-    /// Default port: 20777 (configurable in F1 25 settings).
+    /// F1 25 UDP telemetry adapter with relay support.
+    /// Listens on a dedicated port (default 20778) and forwards packets to SimHub (default 20777).
+    /// This avoids port conflicts with SimHub's own UDP listener.
     /// </summary>
     public class F1_25_UdpAdapter : IGameTelemetryAdapter
     {
@@ -25,10 +25,30 @@ namespace PitLeague.SimHub.Adapters.F1_25
             "topSpeed", "gridPosition", "lapTimes", "pitStops"
         };
 
-        private readonly int _port;
-        private UdpClient _client;
+        // Config
+        private readonly int _listenPort;
+        private readonly int _forwardPort;
+        private readonly bool _forwardEnabled;
+
+        // Sockets
+        private UdpClient _udpClient;
+        private UdpClient _forwardClient;
+        private IPEndPoint _forwardEndpoint;
         private CancellationTokenSource _cts;
         private Task _listenTask;
+        private volatile bool _running;
+
+        // Forward stats
+        private long _forwardPacketsSent;
+        private long _forwardErrors;
+
+        // Public properties for heartbeat
+        public bool IsListening => _running && _udpClient != null;
+        public int ListenPort => _listenPort;
+        public int ForwardPort => _forwardPort;
+        public bool ForwardEnabled => _forwardEnabled;
+        public long ForwardPacketsSent => Interlocked.Read(ref _forwardPacketsSent);
+        public long ForwardErrors => Interlocked.Read(ref _forwardErrors);
 
         // Accumulated state
         private SessionState _session = new SessionState();
@@ -43,44 +63,82 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
-        public F1_25_UdpAdapter(int port = 20777)
+        public F1_25_UdpAdapter(int listenPort = 20778, int forwardPort = 20777, bool forwardEnabled = true)
         {
-            _port = port;
+            _listenPort = listenPort;
+            _forwardPort = forwardPort;
+            _forwardEnabled = forwardEnabled;
         }
 
-        public bool IsAvailable()
+        public bool IsAvailable() => true; // real check happens in Start()
+
+        public bool Start()
         {
+            if (_running) return true; // idempotent
+
             try
             {
-                using (var probe = new UdpClient(_port))
+                // Listen socket — exclusive on listen port (we own it)
+                _udpClient = new UdpClient();
+                _udpClient.Client.ExclusiveAddressUse = true;
+                _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, _listenPort));
+
+                // Forward socket — sends only, no bind
+                if (_forwardEnabled)
                 {
-                    probe.Close();
+                    _forwardClient = new UdpClient();
+                    _forwardEndpoint = new IPEndPoint(IPAddress.Loopback, _forwardPort);
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague:F1_25] UDP relay: listen={_listenPort}, forward=127.0.0.1:{_forwardPort}");
                 }
+                else
+                {
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague:F1_25] UDP listen={_listenPort}, forward DISABLED");
+                }
+
+                _running = true;
+                _cts = new CancellationTokenSource();
+                _listenTask = Task.Run(() => ListenLoop(_cts.Token));
                 return true;
             }
-            catch (SocketException)
+            catch (SocketException sx) when (sx.SocketErrorCode == SocketError.AddressAlreadyInUse)
             {
+                global::SimHub.Logging.Current.Error(
+                    $"[PitLeague:F1_25] Port {_listenPort} already in use. " +
+                    $"Check that no other plugin is bound to {_listenPort}. " +
+                    $"Configure F1 25 UDP Port = {_listenPort}, SimHub Game Config = {_forwardPort}.");
+                Cleanup();
+                return false;
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Error(
+                    $"[PitLeague:F1_25] Failed to start UDP listener: {ex.Message}");
+                Cleanup();
                 return false;
             }
         }
 
-        public void Start()
-        {
-            if (_client != null) return; // idempotent
-
-            _cts = new CancellationTokenSource();
-            _client = new UdpClient(_port);
-            _listenTask = Task.Run(() => ListenLoop(_cts.Token));
-            global::SimHub.Logging.Current.Info($"[PitLeague:F1_25] UDP listener started on port {_port}");
-        }
+        // IGameTelemetryAdapter.Start() returns void — bridge
+        void IGameTelemetryAdapter.Start() => Start();
 
         public void Stop()
         {
             _cts?.Cancel();
-            try { _client?.Close(); } catch { }
+            Cleanup();
             try { _listenTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
-            _client = null;
+            _listenTask = null;
             _cts = null;
+        }
+
+        private void Cleanup()
+        {
+            _running = false;
+            try { _udpClient?.Close(); } catch { }
+            try { _forwardClient?.Close(); } catch { }
+            _udpClient = null;
+            _forwardClient = null;
         }
 
         public void Reset()
@@ -97,34 +155,70 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
         public void Dispose() => Stop();
 
+        // ── Listen loop ──────────────────────────────────────────────────────────
+
         private async Task ListenLoop(CancellationToken ct)
         {
-            while (!ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && _running)
             {
                 try
                 {
-                    var result = await _client.ReceiveAsync().ConfigureAwait(false);
-                    var bytes = result.Buffer;
-                    if (bytes.Length < PacketHeader.SIZE) continue;
+                    var result = await _udpClient.ReceiveAsync().ConfigureAwait(false);
+                    var buffer = result.Buffer;
 
-                    var header = HeaderParser.Parse(bytes);
-                    if (header.PacketFormat != 2025) continue;
+                    // Forward FIRST — don't make SimHub wait for our parsing
+                    ForwardPacket(buffer);
 
-                    // Track packet counts for diagnostics
-                    if (!_packetCounts.ContainsKey(header.PacketId))
-                        _packetCounts[header.PacketId] = 0;
-                    _packetCounts[header.PacketId]++;
+                    // Then parse for our own use
+                    if (buffer.Length < PacketHeader.SIZE) continue;
+                    try
+                    {
+                        var header = HeaderParser.Parse(buffer);
+                        if (header.PacketFormat != 2025) continue;
 
-                    DispatchPacket(header, bytes);
+                        if (!_packetCounts.ContainsKey(header.PacketId))
+                            _packetCounts[header.PacketId] = 0;
+                        _packetCounts[header.PacketId]++;
+
+                        DispatchPacket(header, buffer);
+                    }
+                    catch (Exception ex)
+                    {
+                        global::SimHub.Logging.Current.Warn(
+                            $"[PitLeague:F1_25] Packet parse error (continuing): {ex.Message}");
+                    }
                 }
                 catch (ObjectDisposedException) { break; }
                 catch (SocketException) { break; }
+                catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    global::SimHub.Logging.Current.Warn($"[PitLeague:F1_25] Listen loop error: {ex.Message}");
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague:F1_25] UDP receive error: {ex.Message}");
                 }
             }
         }
+
+        private void ForwardPacket(byte[] buffer)
+        {
+            if (!_forwardEnabled || _forwardClient == null) return;
+            try
+            {
+                _forwardClient.Send(buffer, buffer.Length, _forwardEndpoint);
+                Interlocked.Increment(ref _forwardPacketsSent);
+            }
+            catch (Exception ex)
+            {
+                var errCount = Interlocked.Increment(ref _forwardErrors);
+                if (errCount == 1 || errCount % 1000 == 0)
+                {
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague:F1_25] Forward to :{_forwardPort} failed (#{errCount}): {ex.Message}");
+                }
+            }
+        }
+
+        // ── Packet dispatch ──────────────────────────────────────────────────────
 
         private void DispatchPacket(PacketHeader header, byte[] bytes)
         {
@@ -133,29 +227,24 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 case PacketIds.Session:
                     SessionDataParser.Apply(_session, bytes);
                     break;
-
                 case PacketIds.LapData:
                     LapDataParser.Apply(_lapBuffers, bytes);
                     break;
-
                 case PacketIds.Event:
                     EventParser.Apply(_events, bytes);
                     break;
-
                 case PacketIds.Participants:
                     ParticipantsParser.Apply(_participants, bytes);
                     break;
-
                 case PacketIds.CarDamage:
                     CarDamageParser.Apply(_damageBuffers, bytes);
                     break;
-
                 case PacketIds.FinalClassification:
                     if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
                     {
                         global::SimHub.Logging.Current.Warn(
-                            $"[PitLeague:F1_25] FinalClassification size {bytes.Length} != {FinalClassificationParser.EXPECTED_PACKET_SIZE}. " +
-                            "F1 25 may have been patched — validate offsets.");
+                            $"[PitLeague:F1_25] FinalClassification size {bytes.Length} != " +
+                            $"{FinalClassificationParser.EXPECTED_PACKET_SIZE}. Validate offsets.");
                     }
                     _finalClassification = FinalClassificationParser.Parse(bytes);
                     if (_session.EndedAt == null) _session.EndedAt = DateTime.UtcNow;
@@ -164,6 +253,8 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     break;
             }
         }
+
+        // ── Snapshot ─────────────────────────────────────────────────────────────
 
         public RaceTelemetrySnapshot GetSnapshot()
         {
@@ -195,9 +286,8 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 }
             };
 
-            // Leader race time for pace gap calculation
             double leaderTime = _finalClassification
-                .Where(d => d.ResultStatus == 3) // Finished
+                .Where(d => d.ResultStatus == 3)
                 .OrderBy(d => d.TotalRaceTime)
                 .Select(d => d.TotalRaceTime)
                 .FirstOrDefault();
@@ -223,14 +313,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     FastestLap = _events.FastestLapDriverIdx.HasValue && _events.FastestLapDriverIdx.Value == idx,
                     PolePosition = fc.GridPosition == 1,
                     PenaltySeconds = fc.PenaltiesTime,
-
                     GridPosition = fc.GridPosition,
                     TopSpeed = lapBuf?.MaxSpeedTrap,
                     RacePaceGapPct = (leaderTime > 0 && fc.ResultStatus == 3 && fc.TotalRaceTime > leaderTime)
                         ? Math.Round((fc.TotalRaceTime - leaderTime) / leaderTime * 100, 3)
                         : (double?)null,
                     NumPenaltiesAccumulated = fc.NumPenalties,
-
                     LapTimes = lapBuf?.GetLapTimes(),
                     PitStops = BuildPitStops(fc),
                     TyreStints = BuildStints(fc),
@@ -251,7 +339,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
         public Dictionary<string, int> GetPacketCounts() =>
             _packetCounts.ToDictionary(kv => $"packetId_{kv.Key}", kv => kv.Value);
 
-        // ── Helpers ───────────────────────────────────────────────────────────────
+        // ── Helpers ──────────────────────────────────────────────────────────────
 
         private static string FormatLapTime(uint ms)
         {
@@ -265,55 +353,31 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private static List<TyreStintEntry> BuildStints(FinalClassificationEntry fc)
         {
             if (fc.NumTyreStints == 0) return null;
-
             var stints = new List<TyreStintEntry>();
             int lapStart = 1;
-
             for (int i = 0; i < fc.NumTyreStints && i < 8; i++)
             {
                 var (compound, visual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
-                int lapEnd = i < fc.NumTyreStints - 1
-                    ? fc.TyreStintsEndLaps[i]
-                    : fc.NumLaps;
-
+                int lapEnd = i < fc.NumTyreStints - 1 ? fc.TyreStintsEndLaps[i] : fc.NumLaps;
                 if (lapEnd == 0) lapEnd = fc.NumLaps;
-
-                stints.Add(new TyreStintEntry
-                {
-                    Compound = compound,
-                    VisualCompound = visual,
-                    LapStart = lapStart,
-                    LapEnd = lapEnd
-                });
-
+                stints.Add(new TyreStintEntry { Compound = compound, VisualCompound = visual, LapStart = lapStart, LapEnd = lapEnd });
                 lapStart = lapEnd + 1;
             }
-
             return stints;
         }
 
         private static List<PitStopEntry> BuildPitStops(FinalClassificationEntry fc)
         {
             if (fc.NumPitStops == 0 || fc.NumTyreStints <= 1) return null;
-
             var stops = new List<PitStopEntry>();
             for (int i = 0; i < fc.NumTyreStints - 1 && i < 7; i++)
             {
                 int pitLap = fc.TyreStintsEndLaps[i];
                 if (pitLap <= 0) continue;
-
                 var (fromCompound, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
                 var (toCompound, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
-
-                stops.Add(new PitStopEntry
-                {
-                    Lap = pitLap,
-                    DurationSec = 0, // not available from FinalClassification
-                    TyreFrom = fromVisual,
-                    TyreTo = toVisual
-                });
+                stops.Add(new PitStopEntry { Lap = pitLap, DurationSec = 0, TyreFrom = fromVisual, TyreTo = toVisual });
             }
-
             return stops;
         }
     }
