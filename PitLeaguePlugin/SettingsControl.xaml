@@ -103,6 +103,37 @@
                          TextChanged="TxtMinDrivers_Changed"/>
             </StackPanel>
 
+            <!-- ─── Seção: F1 25 UDP Relay ──────────────────────────────────── -->
+            <TextBlock Text="F1 25 UDP RELAY" Foreground="#E53935"
+                       FontSize="10" FontWeight="Bold" Margin="0,0,0,8"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Listen Port (plugin):" Foreground="#AAA"
+                           VerticalAlignment="Center" Margin="0,0,12,0" FontSize="11"/>
+                <TextBox x:Name="TxtUdpListenPort" Width="60"
+                         Background="#1E1E1E" Foreground="White"
+                         BorderBrush="#444" Padding="6,4" TextAlignment="Center"
+                         TextChanged="TxtUdpListenPort_Changed"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Forward Port (SimHub):" Foreground="#AAA"
+                           VerticalAlignment="Center" Margin="0,0,12,0" FontSize="11"/>
+                <TextBox x:Name="TxtUdpForwardPort" Width="60"
+                         Background="#1E1E1E" Foreground="White"
+                         BorderBrush="#444" Padding="6,4" TextAlignment="Center"
+                         TextChanged="TxtUdpForwardPort_Changed"/>
+            </StackPanel>
+
+            <CheckBox x:Name="ChkUdpForward" Content="Enable forward to SimHub"
+                      Foreground="White" Margin="0,0,0,8"
+                      Click="ChkUdpForward_Click"/>
+
+            <TextBlock x:Name="TxtUdpWarning"
+                       Text="⚙ F1 25 → Settings → Telemetry → UDP Port = 20778.  SimHub → Game Config → UDP Port = 20777."
+                       Foreground="#B8860B" FontSize="10" TextWrapping="Wrap"
+                       Margin="0,0,0,20"/>
+
             <!-- ─── Ação: Enviar resultado ─────────────────────────────────── -->
             <Separator Background="#333" Margin="0,0,0,16"/>
 
