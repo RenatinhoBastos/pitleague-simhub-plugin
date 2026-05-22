@@ -53,6 +53,7 @@
 
   <!-- ─── Arquivos do projeto ─────────────────────────────────────────────── -->
   <ItemGroup>
+    <!-- Core -->
     <Compile Include="PitLeaguePlugin.cs"/>
     <Compile Include="Settings.cs"/>
     <Compile Include="Models.cs"/>
@@ -63,6 +64,34 @@
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
+
+    <!-- Adapter interface + models -->
+    <Compile Include="Adapters\IGameTelemetryAdapter.cs"/>
+    <Compile Include="Adapters\RaceTelemetrySnapshot.cs"/>
+
+    <!-- F1 25 UDP adapter -->
+    <Compile Include="Adapters\F1_25\F1_25_UdpAdapter.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\PacketHeader.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\TyreCompounds.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\FinalClassificationPacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\SessionDataPacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\LapDataPacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\ParticipantsPacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\EventPacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\CarDamagePacket.cs"/>
+
+    <!-- F1 25 state buffers -->
+    <Compile Include="Adapters\F1_25\State\SessionState.cs"/>
+    <Compile Include="Adapters\F1_25\State\LapBuffer.cs"/>
+    <Compile Include="Adapters\F1_25\State\ParticipantsMap.cs"/>
+    <Compile Include="Adapters\F1_25\State\EventLog.cs"/>
+    <Compile Include="Adapters\F1_25\State\CarDamageBuffer.cs"/>
+
+    <!-- Generic fallback adapter -->
+    <Compile Include="Adapters\Generic\GenericSimHubAdapter.cs"/>
+
+    <!-- Payload builder (schema 2.1) -->
+    <Compile Include="Capture\PayloadBuilder.cs"/>
   </ItemGroup>
 
 </Project>
