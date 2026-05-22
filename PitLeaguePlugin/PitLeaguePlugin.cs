@@ -540,7 +540,7 @@ namespace PitLeague.SimHub
                     if (string.IsNullOrEmpty(name)) continue;
 
                     int currentLap = 0;
-                    try { currentLap = o.CurrentLap; } catch { continue; }
+                    try { currentLap = o.CurrentLap ?? 0; } catch { continue; }
 
                     int prevLap;
                     _driverLapNumbers.TryGetValue(name, out prevLap);
@@ -552,8 +552,8 @@ namespace PitLeague.SimHub
                         try
                         {
                             var lastLap = o.LastLapTime;
-                            if (lastLap.HasValue && lastLap.Value > TimeSpan.Zero)
-                                lapTimeMs = (int)lastLap.Value.TotalMilliseconds;
+                            if (lastLap > TimeSpan.Zero)
+                                lapTimeMs = (int)lastLap.TotalMilliseconds;
                         }
                         catch { }
 
@@ -564,8 +564,8 @@ namespace PitLeague.SimHub
                         }
 
                         int s1 = 0, s2 = 0, s3 = 0;
-                        try { s1 = (int)(o.Sector1LastLapTime?.TotalMilliseconds ?? 0); } catch { }
-                        try { s2 = (int)(o.Sector2LastLapTime?.TotalMilliseconds ?? 0); } catch { }
+                        try { var st = o.LastLapSectorTimes?.GetSectorSplit(1); if (st.HasValue) s1 = (int)st.Value.TotalMilliseconds; } catch { }
+                        try { var st = o.LastLapSectorTimes?.GetSectorSplit(2); if (st.HasValue) s2 = (int)st.Value.TotalMilliseconds; } catch { }
                         if (s1 > 0 && s2 > 0 && lapTimeMs > s1 + s2)
                             s3 = lapTimeMs - s1 - s2;
 
@@ -597,8 +597,8 @@ namespace PitLeague.SimHub
                         try
                         {
                             var gap = o.GaptoLeader;
-                            if (gap.HasValue && gap.Value > TimeSpan.Zero)
-                                gapMs = (int)gap.Value.TotalMilliseconds;
+                            if (gap > 0)
+                                gapMs = (int)(gap * 1000);
                         }
                         catch { }
 
