@@ -624,18 +624,48 @@ namespace PitLeague.SimHub
 
             if (completedLaps.Count > 0)
             {
-                _ = Task.Run(async () => await SendLiveLapsSafe(completedLaps).ConfigureAwait(false));
+                // Capture session-level conditions from NewData
+                string weather = "dry";
+                int? airTemp = null;
+                int? trackTemp = null;
+                int? curLap = null;
+                int? totLaps = null;
+                try { airTemp = (int?)data.NewData.AirTemperature; } catch { }
+                try { trackTemp = (int?)data.NewData.RoadTemperature; } catch { }
+                try { totLaps = data.NewData.TotalLaps; } catch { }
+                try { curLap = data.NewData.CurrentLap; } catch { }
+                // Detect wet from tyre usage: if any driver is on INTER/WET → wet
+                foreach (var o in data.NewData.Opponents)
+                {
+                    try
+                    {
+                        var tc = o.FrontTyreCompound;
+                        if (!string.IsNullOrEmpty(tc))
+                        {
+                            var u = tc.ToUpperInvariant();
+                            if (u.Contains("WET") || u.Contains("INTER")) { weather = "wet"; break; }
+                        }
+                    }
+                    catch { }
+                }
+
+                _ = Task.Run(async () => await SendLiveLapsSafe(completedLaps, weather, airTemp, trackTemp, curLap, totLaps).ConfigureAwait(false));
             }
         }
 
-        private async Task SendLiveLapsSafe(List<object> laps)
+        private async Task SendLiveLapsSafe(List<object> laps, string weather, int? airTemp, int? trackTemp, int? curLap, int? totLaps)
         {
             try
             {
                 var payload = new
                 {
                     session_key = _liveSessionKey,
-                    laps = laps
+                    laps = laps,
+                    weather = weather,
+                    air_temp_c = airTemp,
+                    track_temp_c = trackTemp,
+                    current_lap = curLap,
+                    total_laps = totLaps,
                 };
 
                 var json = JsonConvert.SerializeObject(payload);
