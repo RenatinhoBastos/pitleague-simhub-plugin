@@ -564,8 +564,8 @@ namespace PitLeague.SimHub
                         }
 
                         int s1 = 0, s2 = 0, s3 = 0;
-                        try { s1 = (int)(o.Sector1Time?.TotalMilliseconds ?? 0); } catch { }
-                        try { s2 = (int)(o.Sector2Time?.TotalMilliseconds ?? 0); } catch { }
+                        try { s1 = (int)(o.Sector1LastLapTime?.TotalMilliseconds ?? 0); } catch { }
+                        try { s2 = (int)(o.Sector2LastLapTime?.TotalMilliseconds ?? 0); } catch { }
                         if (s1 > 0 && s2 > 0 && lapTimeMs > s1 + s2)
                             s3 = lapTimeMs - s1 - s2;
 
@@ -575,23 +575,20 @@ namespace PitLeague.SimHub
                         bool isPit = false;
                         try { isPit = o.IsCarInPitLane; } catch { }
 
-                        // Tire compound from CarStatus (F1 25 visual compound)
+                        // Tire compound from SimHub Opponent (FrontTyreCompound is a string like "Soft", "Medium", etc.)
                         string compound = "UNKNOWN";
                         try
                         {
-                            // SimHub exposes this as a property — try to access it
-                            var vc = o.VisualTyreCompound;
-                            if (vc != null)
+                            var tc = o.FrontTyreCompound;
+                            if (!string.IsNullOrEmpty(tc))
                             {
-                                int vcInt = Convert.ToInt32(vc);
-                                switch (vcInt)
-                                {
-                                    case 16: compound = "SOFT"; break;
-                                    case 17: compound = "MEDIUM"; break;
-                                    case 18: compound = "HARD"; break;
-                                    case 7: compound = "INTER"; break;
-                                    case 8: compound = "WET"; break;
-                                }
+                                var tcUpper = tc.ToUpperInvariant();
+                                if (tcUpper.Contains("SOFT")) compound = "SOFT";
+                                else if (tcUpper.Contains("MEDIUM")) compound = "MEDIUM";
+                                else if (tcUpper.Contains("HARD")) compound = "HARD";
+                                else if (tcUpper.Contains("INTER")) compound = "INTER";
+                                else if (tcUpper.Contains("WET")) compound = "WET";
+                                else compound = tcUpper;
                             }
                         }
                         catch { /* Property may not exist for all games */ }
@@ -599,7 +596,7 @@ namespace PitLeague.SimHub
                         int gapMs = 0;
                         try
                         {
-                            var gap = o.GapToLeader;
+                            var gap = o.GaptoLeader;
                             if (gap.HasValue && gap.Value > TimeSpan.Zero)
                                 gapMs = (int)gap.Value.TotalMilliseconds;
                         }
