@@ -42,7 +42,13 @@ namespace PitLeague.SimHub
 
         private string _lastSessionType = "";
         private bool _wasInRace = false;
-        private bool _resultSentThisSession = false;
+        private volatile bool _resultSentThisSession = false;
+        private volatile bool _resultRejected = false;
+        private volatile bool _sendingResult = false;
+        private DateTime _lastSendAttempt = DateTime.MinValue;
+        private int _sendAttempts = 0;
+        private const int MAX_SEND_ATTEMPTS = 3;
+        private const int SEND_RETRY_BACKOFF_SECONDS = 5;
 
         // Snapshot of opponents at end of race (for GenericSimHubAdapter)
         private List<OpponentSnapshot> _lastOpponents;
@@ -265,6 +271,10 @@ namespace PitLeague.SimHub
             if (isRace && !_wasInRace)
             {
                 _resultSentThisSession = false;
+                _resultRejected = false;
+                _sendingResult = false;
+                _lastSendAttempt = DateTime.MinValue;
+                _sendAttempts = 0;
                 ResultReadyToSend = false;
                 _lastOpponents = null;
                 _lastLoggedOpponentCount = -1;
@@ -289,8 +299,14 @@ namespace PitLeague.SimHub
         private void TriggerResultReady(string reason)
         {
             if (_resultSentThisSession) return;
+            if (_resultRejected) return;
+            if (_sendingResult) return;
+            if (_sendAttempts >= MAX_SEND_ATTEMPTS) return;
+            if (_sendAttempts > 0 &&
+                (DateTime.UtcNow - _lastSendAttempt).TotalSeconds < SEND_RETRY_BACKOFF_SECONDS)
+                return;
 
-            global::SimHub.Logging.Current.Info($"[PitLeague] TriggerResultReady: reason={reason} | adapter={_activeAdapter.AdapterId} | opponents={_lastOpponents?.Count ?? 0} | track={_lastTrackName ?? "null"}");
+            global::SimHub.Logging.Current.Info($"[PitLeague] TriggerResultReady: reason={reason} | adapter={_activeAdapter.AdapterId} | opponents={_lastOpponents?.Count ?? 0} | track={_lastTrackName ?? "null"} | attempt={_sendAttempts + 1}/{MAX_SEND_ATTEMPTS}");
 
             // If using generic adapter, capture from GameData snapshot
             if (_activeAdapter is GenericSimHubAdapter generic && !generic.HasFinalClassification)
@@ -317,7 +333,14 @@ namespace PitLeague.SimHub
             if (Settings?.AutoSendOnRaceEnd == true)
             {
                 UpdateStatus("Corrida finalizada! Enviando...");
-                _ = Task.Run(async () => await SendResultFromSnapshot().ConfigureAwait(false));
+                _sendingResult = true;
+                _lastSendAttempt = DateTime.UtcNow;
+                _sendAttempts++;
+                _ = Task.Run(async () =>
+                {
+                    try { await SendResultFromSnapshot().ConfigureAwait(false); }
+                    finally { _sendingResult = false; }
+                });
             }
             else
             {
@@ -511,11 +534,24 @@ namespace PitLeague.SimHub
                 }
                 else
                 {
-                    var erro = $"Erro {(int)response.StatusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
+                    var statusCode = (int)response.StatusCode;
+                    var erro = $"Erro {statusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
-                    UpdateStatus(erro);
-                    global::SimHub.Logging.Current.Warn($"[PitLeague] Falha | HTTP {(int)response.StatusCode} | {body.Substring(0, Math.Min(200, body.Length))}");
+
+                    if (statusCode >= 400 && statusCode < 500)
+                    {
+                        _resultRejected = true;
+                        global::SimHub.Logging.Current.Warn($"[PitLeague] Resultado REJEITADO pelo servidor (HTTP {statusCode}) — não será reenviado nesta sessão. Body: {body.Substring(0, Math.Min(500, body.Length))}");
+                        UpdateStatus($"Resultado rejeitado (HTTP {statusCode}). Corrija o problema e tente na próxima corrida.");
+                    }
+                    else
+                    {
+                        global::SimHub.Logging.Current.Warn($"[PitLeague] Falha transiente | HTTP {statusCode} | {body.Substring(0, Math.Min(200, body.Length))}");
+                        UpdateStatus(erro);
+                        if (_sendAttempts >= MAX_SEND_ATTEMPTS)
+                            global::SimHub.Logging.Current.Warn($"[PitLeague] SendResult: desistindo após {MAX_SEND_ATTEMPTS} tentativas falhas nesta sessão");
+                    }
                     return false;
                 }
             }
@@ -525,6 +561,8 @@ namespace PitLeague.SimHub
                 IsConnected = false;
                 UpdateStatus("Erro: " + ex.Message);
                 global::SimHub.Logging.Current.Error($"[PitLeague] SendResult exception: {ex.GetType().Name}: {ex.Message}");
+                if (_sendAttempts >= MAX_SEND_ATTEMPTS)
+                    global::SimHub.Logging.Current.Warn($"[PitLeague] SendResult: desistindo após {MAX_SEND_ATTEMPTS} tentativas falhas nesta sessão");
                 return false;
             }
         }
