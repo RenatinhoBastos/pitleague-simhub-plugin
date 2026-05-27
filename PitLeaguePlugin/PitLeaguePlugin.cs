@@ -20,7 +20,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.3.0";
+        public const string VERSION = "2.5.0";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -71,6 +71,12 @@ namespace PitLeague.SimHub
 
         // Heartbeat
         private System.Threading.Timer _heartbeatTimer;
+
+        // Live lap tracking
+        private readonly Dictionary<string, int> _driverLapNumbers = new Dictionary<string, int>();
+        private string _liveSessionKey = null;
+        private static readonly HttpClient _liveLapHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        private volatile bool _sendingLiveLap = false;
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -167,7 +173,7 @@ namespace PitLeague.SimHub
                 callback: _ => SendHeartbeatSafe(),
                 state: null,
                 dueTime: TimeSpan.FromSeconds(5),
-                period: TimeSpan.FromSeconds(30)
+                period: TimeSpan.FromSeconds(120)
             );
 
             UpdateStatus($"Plugin PitLeague v{VERSION} | Adapter: {_activeAdapter.AdapterId}");
@@ -255,6 +261,7 @@ namespace PitLeague.SimHub
             if (isInRace)
             {
                 SnapshotData(data);
+                DetectAndSendLiveLaps(data);
                 if (_lastValidDataInRace == DateTime.MinValue)
                     global::SimHub.Logging.Current.Info("[PitLeague] Race ativa, monitorando stall timeout");
                 _lastValidDataInRace = DateTime.UtcNow;
@@ -280,6 +287,9 @@ namespace PitLeague.SimHub
                 _lastLoggedOpponentCount = -1;
                 _lastValidDataInRace = DateTime.MinValue;
                 _stallLogged = false;
+                _driverLapNumbers.Clear();
+                _liveSessionKey = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                _sendingLiveLap = false;
 
                 // Reset all adapters for new session
                 foreach (var adapter in _adapters)
@@ -667,6 +677,182 @@ namespace PitLeague.SimHub
             catch (Exception ex)
             {
                 global::SimHub.Logging.Current.Warn($"[PitLeague] Heartbeat excecao: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        // ─── Live lap detection and sending ──────────────────────────────
+
+        private void DetectAndSendLiveLaps(GameData data)
+        {
+            if (string.IsNullOrEmpty(_liveSessionKey)) return;
+            if (data.NewData?.Opponents == null || data.NewData.Opponents.Count == 0) return;
+            if (string.IsNullOrWhiteSpace(Settings?.ApiKey) || string.IsNullOrWhiteSpace(Settings?.LeagueId)) return;
+
+            var completedLaps = new List<object>();
+
+            foreach (var o in data.NewData.Opponents)
+            {
+                try
+                {
+                    var name = o.Name?.Trim() ?? "";
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    int currentLap = 0;
+                    try { currentLap = o.CurrentLap ?? 0; } catch { continue; }
+
+                    int prevLap;
+                    _driverLapNumbers.TryGetValue(name, out prevLap);
+
+                    if (currentLap > prevLap && prevLap > 0)
+                    {
+                        // Driver completed a lap (lap number increased)
+                        int lapTimeMs = 0;
+                        try
+                        {
+                            var lastLap = o.LastLapTime;
+                            if (lastLap > TimeSpan.Zero)
+                                lapTimeMs = (int)lastLap.TotalMilliseconds;
+                        }
+                        catch { }
+
+                        if (lapTimeMs <= 0)
+                        {
+                            _driverLapNumbers[name] = currentLap;
+                            continue; // Skip invalid laps
+                        }
+
+                        int s1 = 0, s2 = 0, s3 = 0;
+                        try { var st = o.LastLapSectorTimes?.GetSectorSplit(1); if (st.HasValue) s1 = (int)st.Value.TotalMilliseconds; } catch { }
+                        try { var st = o.LastLapSectorTimes?.GetSectorSplit(2); if (st.HasValue) s2 = (int)st.Value.TotalMilliseconds; } catch { }
+                        if (s1 > 0 && s2 > 0 && lapTimeMs > s1 + s2)
+                            s3 = lapTimeMs - s1 - s2;
+
+                        int position = 0;
+                        try { position = o.Position; } catch { }
+
+                        bool isPit = false;
+                        try { isPit = o.IsCarInPitLane; } catch { }
+
+                        string compound = "UNKNOWN";
+                        try
+                        {
+                            var tc = o.FrontTyreCompound;
+                            if (!string.IsNullOrEmpty(tc))
+                            {
+                                var tcUpper = tc.ToUpperInvariant();
+                                if (tcUpper.Contains("SOFT")) compound = "SOFT";
+                                else if (tcUpper.Contains("MEDIUM")) compound = "MEDIUM";
+                                else if (tcUpper.Contains("HARD")) compound = "HARD";
+                                else if (tcUpper.Contains("INTER")) compound = "INTER";
+                                else if (tcUpper.Contains("WET")) compound = "WET";
+                                else compound = tcUpper;
+                            }
+                        }
+                        catch { }
+
+                        int gapMs = 0;
+                        try
+                        {
+                            var gap = o.GaptoLeader;
+                            if (gap > 0)
+                                gapMs = (int)(gap * 1000);
+                        }
+                        catch { }
+
+                        completedLaps.Add(new
+                        {
+                            driver_name = name,
+                            lap_number = prevLap,
+                            lap_time_ms = lapTimeMs,
+                            s1_ms = s1 > 0 ? s1 : (int?)null,
+                            s2_ms = s2 > 0 ? s2 : (int?)null,
+                            s3_ms = s3 > 0 ? s3 : (int?)null,
+                            tire_compound = compound,
+                            position = position > 0 ? position : (int?)null,
+                            gap_to_leader_ms = gapMs > 0 ? gapMs : (int?)null,
+                            is_pit_lap = isPit,
+                        });
+                    }
+
+                    _driverLapNumbers[name] = currentLap;
+                }
+                catch { /* Skip problematic opponents */ }
+            }
+
+            if (completedLaps.Count > 0 && !_sendingLiveLap)
+            {
+                string weather = "dry";
+                int? airTemp = null;
+                int? trackTemp = null;
+                int? curLap = null;
+                int? totLaps = null;
+                try { airTemp = (int?)data.NewData.AirTemperature; } catch { }
+                try { trackTemp = (int?)data.NewData.RoadTemperature; } catch { }
+                try { totLaps = data.NewData.TotalLaps; } catch { }
+                try { curLap = data.NewData.CurrentLap; } catch { }
+                foreach (var o in data.NewData.Opponents)
+                {
+                    try
+                    {
+                        var tc = o.FrontTyreCompound;
+                        if (!string.IsNullOrEmpty(tc))
+                        {
+                            var u = tc.ToUpperInvariant();
+                            if (u.Contains("WET") || u.Contains("INTER")) { weather = "wet"; break; }
+                        }
+                    }
+                    catch { }
+                }
+
+                _sendingLiveLap = true;
+                _ = Task.Run(async () =>
+                {
+                    try { await SendLiveLapsSafe(completedLaps, weather, airTemp, trackTemp, curLap, totLaps).ConfigureAwait(false); }
+                    finally { _sendingLiveLap = false; }
+                });
+            }
+        }
+
+        private async Task SendLiveLapsSafe(List<object> laps, string weather, int? airTemp, int? trackTemp, int? curLap, int? totLaps)
+        {
+            try
+            {
+                var payload = new
+                {
+                    session_key = _liveSessionKey,
+                    laps = laps,
+                    weather = weather,
+                    air_temp_c = airTemp,
+                    track_temp_c = trackTemp,
+                    current_lap = curLap,
+                    total_laps = totLaps,
+                };
+
+                var json = JsonConvert.SerializeObject(payload);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/live-lap"
+                );
+                request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {Settings.ApiKey}");
+                request.Content = content;
+
+                var response = await _liveLapHttp.SendAsync(request).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    global::SimHub.Logging.Current.Warn($"[PitLeague] LiveLap send failed HTTP {(int)response.StatusCode}: {body.Substring(0, Math.Min(200, body.Length))}");
+                }
+                else
+                {
+                    global::SimHub.Logging.Current.Info($"[PitLeague] LiveLap sent: {laps.Count} laps");
+                }
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Warn($"[PitLeague] LiveLap exception: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
