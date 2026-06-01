@@ -20,7 +20,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.5.0";
+        public const string VERSION = "2.5.0-debug";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -510,6 +510,12 @@ namespace PitLeague.SimHub
                     $"[PitLeague] Enviando resultado: {snapshot.Drivers.Count} pilotos via {_activeAdapter.AdapterId} para {url}");
 
                 UpdateStatus($"Enviando {snapshot.Drivers.Count} pilotos...");
+
+                if (Settings.DebugMode)
+                {
+                    var preview = json.Length > 500 ? json.Substring(0, 500) + "..." : json;
+                    global::SimHub.Logging.Current.Info($"[PitLeague] POST payload preview ({json.Length} chars): {preview}");
+                }
 
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 var request = new HttpRequestMessage(HttpMethod.Post, url);
