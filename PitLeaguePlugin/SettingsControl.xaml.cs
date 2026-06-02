@@ -201,20 +201,23 @@ namespace PitLeague.SimHub
         private async void BtnSendResult_Click(object sender, RoutedEventArgs e)
         {
             global::SimHub.Logging.Current.Info("[PitLeague] Botao 'Enviar Resultado' clicado pelo usuario");
-            if (!_plugin.ResultReadyToSend)
+
+            // v2.6.0: use persisted JSON (does not require FinalClassification packet)
+            if (!_plugin.HasPersistedResult && !_plugin.ResultReadyToSend)
             {
                 MessageBox.Show(
-                    "Nenhuma corrida finalizada detectada.\nConclua uma corrida antes de enviar.",
+                    "Nenhum resultado disponível para envio.\nConclua uma corrida antes de enviar.\n\n" +
+                    "No result available to send.\nComplete a race before sending.",
                     "PitLeague", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             BtnSendResult.IsEnabled = false;
-            BtnSendResult.Content = "Enviando...";
+            BtnSendResult.Content = "Enviando... / Sending...";
 
-            await _plugin.SendResultFromSnapshot();
+            await _plugin.SendResultFromJson();
 
-            BtnSendResult.Content = "Enviar Resultado Agora";
+            BtnSendResult.Content = "Enviar Resultado / Send Result";
             BtnSendResult.IsEnabled = true;
 
             var s = _plugin.Settings;

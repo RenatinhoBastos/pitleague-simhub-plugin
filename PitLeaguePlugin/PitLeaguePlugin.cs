@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -21,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.5.2";
+        public const string VERSION = "2.6.0";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -85,10 +86,18 @@ namespace PitLeague.SimHub
         private System.Threading.Timer _resultDebounceTimer;
         private const int RESULT_SETTLE_MS = 1500; // 1.5s settle window
 
+        // Persisted JSON result file
+        private string _resultJsonDir;
+        private string _resultJsonPath;
+        private bool _resultJsonHasFinalClassification = false;
+        private DateTime _lastJsonWriteTime = DateTime.MinValue;
+        private const int JSON_WRITE_INTERVAL_MS = 3000; // write every 3s max
+
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
         public bool IsConnected { get; private set; } = false;
         public bool ResultReadyToSend { get; private set; } = false;
+        public bool HasPersistedResult => _resultJsonPath != null && File.Exists(_resultJsonPath);
         public event EventHandler StatusChanged;
 
         // ─── Helpers ──────────────────────────────────────────────────────────
@@ -175,6 +184,13 @@ namespace PitLeague.SimHub
 
             pluginManager.SetPropertyValue("PitLeague.ActiveAdapter", this.GetType(), _activeAdapter.AdapterId);
 
+            // Initialize JSON result persistence directory
+            _resultJsonDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PitLeague");
+            try { Directory.CreateDirectory(_resultJsonDir); } catch { }
+            global::SimHub.Logging.Current.Info($"[PitLeague] JSON result dir: {_resultJsonDir}");
+
             // Heartbeat timer: first in 5s, then every 30s
             _heartbeatTimer = new System.Threading.Timer(
                 callback: _ => SendHeartbeatSafe(),
@@ -224,7 +240,8 @@ namespace PitLeague.SimHub
                     _resultDebounceTimer?.Dispose();
                     _resultDebounceTimer = new System.Threading.Timer(_ =>
                     {
-                        global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — disparando resultado");
+                        global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — enriquecendo JSON e disparando resultado");
+                        EnrichJsonWithFinalClassification();
                         TriggerResultReady("f125_final_classification");
                     }, null, RESULT_SETTLE_MS, System.Threading.Timeout.Infinite);
                     _wasInRace = false;
@@ -280,6 +297,7 @@ namespace PitLeague.SimHub
             if (isInRace)
             {
                 SnapshotData(data);
+                PersistResultJson();
                 DetectAndSendLiveLaps(data);
                 if (_lastValidDataInRace == DateTime.MinValue)
                     global::SimHub.Logging.Current.Info("[PitLeague] Race ativa, monitorando stall timeout");
@@ -312,6 +330,8 @@ namespace PitLeague.SimHub
                 Interlocked.Exchange(ref _resultDispatchGuard, 0);
                 _resultDebounceTimer?.Dispose();
                 _resultDebounceTimer = null;
+                _resultJsonHasFinalClassification = false;
+                _lastJsonWriteTime = DateTime.MinValue;
 
                 // Reset all adapters for new session
                 foreach (var adapter in _adapters)
@@ -352,32 +372,24 @@ namespace PitLeague.SimHub
                 }
             }
 
-            if (!_activeAdapter.HasFinalClassification)
+            if (!_activeAdapter.HasFinalClassification && !HasPersistedResult)
             {
-                global::SimHub.Logging.Current.Warn("[PitLeague] TriggerResultReady mas adapter sem dados.");
+                global::SimHub.Logging.Current.Warn("[PitLeague] TriggerResultReady mas adapter sem dados e sem JSON persistido.");
                 UpdateStatus("Corrida finalizada mas sem dados suficientes.");
                 return;
+            }
+
+            if (!_activeAdapter.HasFinalClassification && HasPersistedResult)
+            {
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Usando resultado reconstruído do estado ao vivo — FinalClassification não recebida. JSON: {_resultJsonPath}");
             }
 
             ResultReadyToSend = true;
             PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
 
-            if (Settings?.AutoSendOnRaceEnd == true)
-            {
-                UpdateStatus("Corrida finalizada! Enviando...");
-                _sendingResult = true;
-                _lastSendAttempt = DateTime.UtcNow;
-                _sendAttempts++;
-                _ = Task.Run(async () =>
-                {
-                    try { await SendResultFromSnapshot().ConfigureAwait(false); }
-                    finally { _sendingResult = false; }
-                });
-            }
-            else
-            {
-                UpdateStatus("Corrida finalizada! Pronto para enviar.");
-            }
+            // In v2.6.0, auto-send is disabled — manual only via "Enviar Resultado" button
+            UpdateStatus("Corrida finalizada! Clique 'Enviar Resultado'. / Race finished! Click 'Send Result'.");
         }
 
         // ─── Force capture (for broadcasters/admins) ─────────────────────────
@@ -486,7 +498,183 @@ namespace PitLeague.SimHub
             }
         }
 
-        // ─── Send result using adapter pipeline ──────────────────────────────
+        // ─── Persist result JSON locally ─────────────────────────────────────
+
+        private void PersistResultJson()
+        {
+            try
+            {
+                if (_lastOpponents == null || _lastOpponents.Count == 0) return;
+                if (string.IsNullOrEmpty(Settings.LeagueId)) return;
+
+                // Throttle writes
+                if ((DateTime.UtcNow - _lastJsonWriteTime).TotalMilliseconds < JSON_WRITE_INTERVAL_MS) return;
+                _lastJsonWriteTime = DateTime.UtcNow;
+
+                // Build snapshot using GenericSimHubAdapter's format
+                var tempAdapter = new GenericSimHubAdapter(
+                    Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : _lastGameName);
+                tempAdapter.CaptureFromGameData(
+                    _lastOpponents, _lastTrackName, _lastSessionTypeName,
+                    _lastTotalLaps, _lastGameName);
+
+                var snapshot = tempAdapter.GetSnapshot();
+                var json = PayloadBuilder.Build(
+                    snapshot, tempAdapter, Settings.LeagueId, VERSION, null);
+
+                // Atomic write: temp file + rename
+                var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
+                var tempPath = filePath + ".tmp";
+                File.WriteAllText(tempPath, json, Encoding.UTF8);
+                if (File.Exists(filePath)) File.Delete(filePath);
+                File.Move(tempPath, filePath);
+                _resultJsonPath = filePath;
+
+                if (Settings.DebugMode)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] JSON de resultado atualizado: {snapshot.Drivers.Count} pilotos | " +
+                        $"track={snapshot.Session.Track} | session={snapshot.Session.Type}");
+                }
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Warn($"[PitLeague] PersistResultJson error: {ex.Message}");
+            }
+        }
+
+        private void EnrichJsonWithFinalClassification()
+        {
+            try
+            {
+                if (!_activeAdapter.HasFinalClassification) return;
+                if (string.IsNullOrEmpty(Settings.LeagueId)) return;
+
+                var snapshot = _activeAdapter.GetSnapshot();
+
+                Dictionary<string, int> udpStats = null;
+                if (_activeAdapter is F1_25_UdpAdapter f125)
+                    udpStats = f125.GetPacketCounts();
+
+                var json = PayloadBuilder.Build(
+                    snapshot, _activeAdapter, Settings.LeagueId, VERSION, udpStats);
+
+                var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
+                var tempPath = filePath + ".tmp";
+                File.WriteAllText(tempPath, json, Encoding.UTF8);
+                if (File.Exists(filePath)) File.Delete(filePath);
+                File.Move(tempPath, filePath);
+                _resultJsonPath = filePath;
+                _resultJsonHasFinalClassification = true;
+
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] JSON enriquecido com FinalClassification oficial: " +
+                    $"{snapshot.Drivers.Count} pilotos | track={snapshot.Session.Track}");
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Warn($"[PitLeague] EnrichJson error: {ex.Message}");
+            }
+        }
+
+        // ─── Send result from persisted JSON ────────────────────────────────
+
+        public async Task<bool> SendResultFromJson()
+        {
+            if (string.IsNullOrEmpty(Settings.ApiKey))
+            {
+                UpdateStatus("API Key não configurada / API Key not configured");
+                return false;
+            }
+            if (string.IsNullOrEmpty(Settings.LeagueId))
+            {
+                UpdateStatus("League ID não configurado / League ID not configured");
+                return false;
+            }
+
+            var filePath = Path.Combine(_resultJsonDir ?? "", $"last_result_{Settings.LeagueId}.json");
+            if (!File.Exists(filePath))
+            {
+                UpdateStatus("Nenhum resultado disponível para envio / No result available to send");
+                global::SimHub.Logging.Current.Warn("[PitLeague] SendResultFromJson: JSON file not found");
+                return false;
+            }
+
+            try
+            {
+                var json = File.ReadAllText(filePath, Encoding.UTF8);
+
+                if (Settings.DebugMode)
+                {
+                    var preview = json.Length > 500 ? json.Substring(0, 500) + "..." : json;
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Lendo JSON persistido ({json.Length} chars): {preview}");
+                }
+
+                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Enviando resultado do JSON persistido para {url}" +
+                    (_resultJsonHasFinalClassification ? " (enriquecido com FinalClassification)" : " (reconstruído do estado ao vivo)"));
+
+                UpdateStatus("Enviando resultado... / Sending result...");
+
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var request = new HttpRequestMessage(HttpMethod.Post, url);
+                request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
+                request.Content = content;
+
+                var response = await _http.SendAsync(request);
+                var body = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = JsonConvert.DeserializeObject<ApiResponse>(body);
+                    var matchInfo = result?.Total > 0
+                        ? $" ({result.Matched}/{result.Total} gamertags)"
+                        : "";
+
+                    Settings.LastSentAt = DateTime.UtcNow;
+                    Settings.LastSendStatus = "Dados enviados com sucesso" + matchInfo;
+                    _resultSentThisSession = true;
+                    ResultReadyToSend = false;
+                    IsConnected = true;
+
+                    this.SaveCommonSettings("PitLeagueSettings", Settings);
+                    UpdateStatus("Dados enviados com sucesso! / Data sent successfully!" + matchInfo);
+
+                    PluginManager?.SetPropertyValue("PitLeague.Connected", this.GetType(), true);
+                    PluginManager?.SetPropertyValue("PitLeague.LastSentAt", this.GetType(), DateTime.Now.ToString("dd/MM HH:mm"));
+                    PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
+
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Dados enviados com sucesso | HTTP {(int)response.StatusCode} | " +
+                        $"matched={result?.Matched ?? 0}/{result?.Total ?? 0}");
+                    return true;
+                }
+                else
+                {
+                    var statusCode = (int)response.StatusCode;
+                    var erro = $"Erro {statusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
+                    Settings.LastSendStatus = erro;
+                    IsConnected = false;
+                    // Keep JSON for retry — do NOT delete
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague] Envio falhou | HTTP {statusCode} | {body.Substring(0, Math.Min(500, body.Length))}");
+                    UpdateStatus(erro);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Settings.LastSendStatus = "Exceção: " + ex.Message;
+                IsConnected = false;
+                UpdateStatus("Erro: " + ex.Message);
+                global::SimHub.Logging.Current.Error($"[PitLeague] SendResultFromJson exception: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        // ─── Send result using adapter pipeline (legacy — kept for auto-send) ──
 
         public async Task<bool> SendResultFromSnapshot()
         {
