@@ -275,9 +275,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
             List<FinalClassificationEntry> frozenClassification;
             Dictionary<byte, LapBuffer> frozenLapBuffers;
             Dictionary<byte, CarDamageBuffer> frozenDamageBuffers;
-            List<EventLog.PenaltyRecord> frozenAllPenalties;
             byte? frozenFastestLapIdx;
-            List<int> frozenCollisionCounts;
 
             lock (_snapshotLock)
             {
@@ -288,9 +286,6 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 frozenLapBuffers = new Dictionary<byte, LapBuffer>(_lapBuffers);
                 frozenDamageBuffers = new Dictionary<byte, CarDamageBuffer>(_damageBuffers);
                 frozenFastestLapIdx = _events.FastestLapDriverIdx;
-                // Snapshot penalty/collision data per driver
-                frozenAllPenalties = null; // will query per-driver below
-                frozenCollisionCounts = null;
             }
 
             var snapshot = new RaceTelemetrySnapshot
@@ -332,7 +327,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
                 frozenLapBuffers.TryGetValue(idx, out var lapBuf);
                 frozenDamageBuffers.TryGetValue(idx, out var dmgBuf);
-                List<string> penalties;
+                List<PenaltyEntry> penalties;
                 int collisions;
                 lock (_snapshotLock)
                 {
