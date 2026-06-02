@@ -33,7 +33,9 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                 case 5: // storm
                     return "wet";
                 default:
-                    return null;
+                    // F1 25 may add new weather codes — treat unknown as "dry"
+                    // rather than null (which blocks entire weather section)
+                    return "dry";
             }
         }
 

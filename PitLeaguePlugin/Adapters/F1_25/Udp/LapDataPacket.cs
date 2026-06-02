@@ -6,7 +6,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
     /// <summary>
     /// Parser for F1 25 LapData packet (PacketId=2).
     /// Contains per-car lap data: sectors, warnings, penalties, grid position, speed trap.
-    /// Each car entry is ~50 bytes. 22 cars max.
+    /// Each car entry is 57 bytes (F1 25). 22 cars max.
     /// </summary>
     public struct LapDataEntry
     {
@@ -32,7 +32,41 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
         public byte ResultStatus;
         public float SpeedTrap;              // top speed this lap (km/h)
 
-        public const int ENTRY_SIZE = 50;    // approximate — read with BinaryReader for safety
+        // F1 25 LapData entry layout (57 bytes):
+        //   +0  lastLapTimeInMS        (uint32)
+        //   +4  currentLapTimeInMS     (uint32)
+        //   +8  sector1TimeMSPart      (uint16)
+        //  +10  sector1TimeMinutesPart (uint8)
+        //  +11  sector2TimeMSPart      (uint16)
+        //  +13  sector2TimeMinutesPart (uint8)
+        //  +14  deltaToCarInFront      (uint16)
+        //  +16  deltaToRaceLeader      (uint16)
+        //  +18  deltaToFastest?        (uint16)   [6 bytes delta total]
+        //  +20  lapDistance             (float)
+        //  +24  totalDistance           (float)
+        //  +28  safetyCarDelta         (float)
+        //  +32  carPosition            (uint8)
+        //  +33  currentLapNum          (uint8)
+        //  +34  pitStatus              (uint8)
+        //  +35  numPitStops            (uint8)
+        //  +36  sector                 (uint8)
+        //  +37  currentLapInvalid      (uint8)
+        //  +38  penalties              (uint8)
+        //  +39  totalWarnings          (uint8)
+        //  +40  cornerCuttingWarnings  (uint8)
+        //  +41  numUnservedDriveThru   (uint8)
+        //  +42  numUnservedStopGo      (uint8)
+        //  +43  gridPosition           (uint8)
+        //  +44  driverStatus           (uint8)
+        //  +45  resultStatus           (uint8)
+        //  +46  pitLaneTimerActive     (uint8)
+        //  +47  pitLaneTimeInLaneInMS  (uint16)
+        //  +49  pitStopTimerInMS       (uint16)
+        //  +51  pitStopShouldServePen  (uint8)
+        //  +52  speedTrapFastestSpeed  (float)
+        //  +56  speedTrapFastestLap    (uint8)
+        //  = 57 bytes total — NO resultReason (that field is FinalClassification-only)
+        public const int ENTRY_SIZE = 57;
     }
 
     public static class LapDataParser
@@ -68,11 +102,16 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                     byte cornerCutting = data[offset + 40];
                     // NumUnservedDriveThrough + StopGo: 2 bytes at offset+41,42
                     byte gridPosition = data[offset + 43];
-                    // DriverStatus + ResultStatus + PitLaneTimer stuff
+                    // +44: driverStatus, +45: resultStatus,
+                    // +46: pitLaneTimerActive, +47-48: pitLaneTimeInLane, +49-50: pitStopTimer,
+                    // +51: pitStopShouldServePen, +52-55: speedTrapFastestSpeed (float)
                     float speedTrap = 0;
-                    if (offset + 49 + 4 <= data.Length)
+                    if (offset + 52 + 4 <= data.Length)
                     {
-                        speedTrap = BitConverter.ToSingle(data, offset + 49);
+                        float raw = BitConverter.ToSingle(data, offset + 52);
+                        // Validate: plausible speed range 10-450 km/h (reject garbage values)
+                        if (raw >= 10f && raw <= 450f)
+                            speedTrap = raw;
                     }
 
                     if (!buffers.ContainsKey(carIdx))
