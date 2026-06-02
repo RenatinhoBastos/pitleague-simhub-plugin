@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.6.1";
+        public const string VERSION = "2.6.2";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -730,7 +730,15 @@ namespace PitLeague.SimHub
 
                     global::SimHub.Logging.Current.Info(
                         $"[PitLeague] Dados enviados com sucesso | HTTP {(int)response.StatusCode} | " +
-                        $"matched={result?.Matched ?? 0}/{result?.Total ?? 0}");
+                        $"matched={result?.Matched ?? 0}/{result?.Total ?? 0} | logId={result?.LogId ?? "null"}");
+
+                    if (string.IsNullOrEmpty(result?.LogId))
+                    {
+                        global::SimHub.Logging.Current.Warn(
+                            "[PitLeague] ATENÇÃO: 200 mas logId nulo — resultado pode não ter sido persistido / " +
+                            "WARNING: 200 but logId is null — result may not have been persisted");
+                    }
+
                     return true;
                 }
                 else
