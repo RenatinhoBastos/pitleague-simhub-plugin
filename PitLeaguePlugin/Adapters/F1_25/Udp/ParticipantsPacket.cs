@@ -33,7 +33,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                 byte raceNumber = data[offset + 5];
 
                 // Name: 48 bytes, null-terminated UTF-8
-                string name = Encoding.UTF8.GetString(data, offset + 6, NAME_LENGTH).TrimEnd('\0').Trim();
+                string name = Encoding.UTF8.GetString(data, offset + 6, NAME_LENGTH).Replace("\0", "").Trim();
 
                 map.Set(carIdx, new State.ParticipantInfo
                 {

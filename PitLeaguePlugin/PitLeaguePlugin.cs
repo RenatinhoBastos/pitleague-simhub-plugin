@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.6.3";
+        public const string VERSION = "2.6.4";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -457,9 +457,9 @@ namespace PitLeague.SimHub
         {
             try
             {
-                _lastTrackName = data.NewData.TrackName ?? "Unknown";
+                _lastTrackName = (data.NewData.TrackName ?? "Unknown").Replace("\0", "").Trim();
                 try { _lastTotalLaps = data.NewData.TotalLaps; } catch { _lastTotalLaps = 0; }
-                _lastSessionTypeName = data.NewData.SessionTypeName ?? "Race";
+                _lastSessionTypeName = (data.NewData.SessionTypeName ?? "Race").Replace("\0", "").Trim();
                 _lastGameName = Settings.GameDisplayName.Length > 0
                     ? Settings.GameDisplayName
                     : "Unknown";
@@ -476,9 +476,9 @@ namespace PitLeague.SimHub
                         _lastOpponents.Add(new OpponentSnapshot
                         {
                             Position = o.Position,
-                            Name = o.Name ?? "",
-                            TeamName = o.TeamName ?? "",
-                            CarNumber = o.CarNumber?.ToString() ?? "",
+                            Name = (o.Name ?? "").Replace("\0", "").Trim(),
+                            TeamName = (o.TeamName ?? "").Replace("\0", "").Trim(),
+                            CarNumber = (o.CarNumber?.ToString() ?? "").Replace("\0", "").Trim(),
                             BestLapTime = o.BestLapTime,
                             IsPlayer = o.IsPlayer,
                         });
