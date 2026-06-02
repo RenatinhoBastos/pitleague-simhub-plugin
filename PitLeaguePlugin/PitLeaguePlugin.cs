@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.6.2";
+        public const string VERSION = "2.6.3";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -504,23 +504,43 @@ namespace PitLeague.SimHub
         {
             try
             {
-                if (_lastOpponents == null || _lastOpponents.Count == 0) return;
                 if (string.IsNullOrEmpty(Settings.LeagueId)) return;
 
                 // Throttle writes
                 if ((DateTime.UtcNow - _lastJsonWriteTime).TotalMilliseconds < JSON_WRITE_INTERVAL_MS) return;
                 _lastJsonWriteTime = DateTime.UtcNow;
 
-                // Build snapshot using GenericSimHubAdapter's format
-                var tempAdapter = new GenericSimHubAdapter(
-                    Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : _lastGameName);
-                tempAdapter.CaptureFromGameData(
-                    _lastOpponents, _lastTrackName, _lastSessionTypeName,
-                    _lastTotalLaps, _lastGameName);
+                RaceTelemetrySnapshot snapshot;
+                IGameTelemetryAdapter usedAdapter;
+                Dictionary<string, int> udpStats = null;
+                bool isRich = false;
 
-                var snapshot = tempAdapter.GetSnapshot();
+                // Prefer f125 rich data when FinalClassification is available
+                if (_activeAdapter is F1_25_UdpAdapter f125Rich && f125Rich.HasFinalClassification)
+                {
+                    snapshot = f125Rich.GetSnapshot();
+                    usedAdapter = f125Rich;
+                    udpStats = f125Rich.GetPacketCounts();
+                    isRich = true;
+                }
+                else if (_lastOpponents != null && _lastOpponents.Count > 0)
+                {
+                    // Fallback: generic adapter from live state (no FinalClassification yet)
+                    var tempAdapter = new GenericSimHubAdapter(
+                        Settings.GameDisplayName.Length > 0 ? Settings.GameDisplayName : _lastGameName);
+                    tempAdapter.CaptureFromGameData(
+                        _lastOpponents, _lastTrackName, _lastSessionTypeName,
+                        _lastTotalLaps, _lastGameName);
+                    snapshot = tempAdapter.GetSnapshot();
+                    usedAdapter = tempAdapter;
+                }
+                else
+                {
+                    return; // No data to persist
+                }
+
                 var json = PayloadBuilder.Build(
-                    snapshot, tempAdapter, Settings.LeagueId, VERSION, null);
+                    snapshot, usedAdapter, Settings.LeagueId, VERSION, udpStats);
 
                 // Atomic write: temp file + rename
                 var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
@@ -533,7 +553,8 @@ namespace PitLeague.SimHub
                 if (Settings.DebugMode)
                 {
                     global::SimHub.Logging.Current.Info(
-                        $"[PitLeague] JSON de resultado atualizado: {snapshot.Drivers.Count} pilotos | " +
+                        $"[PitLeague] JSON atualizado: {snapshot.Drivers.Count} pilotos | " +
+                        $"adapter={usedAdapter.AdapterId} | rich={isRich} | " +
                         $"track={snapshot.Session.Track} | session={snapshot.Session.Type}");
                 }
             }
