@@ -61,6 +61,20 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Stats for diagnostics (guarded by _snapshotLock)
         private Dictionary<byte, int> _packetCounts = new Dictionary<byte, int>();
 
+        // Session metadata frozen at FinalClassification time (before game switches to "Other")
+        private string _frozenSessionType;
+        private string _frozenSessionTrack;
+        private int _frozenSessionTotalLaps;
+        private DateTime? _frozenSessionStartedAt;
+        private DateTime? _frozenSessionEndedAt;
+        private string _frozenWeatherCondition;
+        private double? _frozenAirTempStart;
+        private double? _frozenAirTempEnd;
+        private double? _frozenTrackTempStart;
+        private double? _frozenTrackTempEnd;
+        private int? _frozenRainPercentageAvg;
+        private List<WeatherChange> _frozenWeatherChanges;
+
         // Lock for thread-safe snapshot capture
         private readonly object _snapshotLock = new object();
 
@@ -156,6 +170,19 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 _finalClassification = null;
                 _packetCounts.Clear();
             }
+            // Reset frozen session metadata
+            _frozenSessionType = null;
+            _frozenSessionTrack = null;
+            _frozenSessionTotalLaps = 0;
+            _frozenSessionStartedAt = null;
+            _frozenSessionEndedAt = null;
+            _frozenWeatherCondition = null;
+            _frozenAirTempStart = null;
+            _frozenAirTempEnd = null;
+            _frozenTrackTempStart = null;
+            _frozenTrackTempEnd = null;
+            _frozenRainPercentageAvg = null;
+            _frozenWeatherChanges = null;
             global::SimHub.Logging.Current.Info("[PitLeague:F1_25] State reset for new session");
         }
 
@@ -259,9 +286,23 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     {
                         _finalClassification = FinalClassificationParser.Parse(bytes);
                     }
-                    if (_session.EndedAt == null) _session.EndedAt = DateTime.UtcNow;
+                    // Freeze session metadata NOW — before the game switches to "Other"/next track
+                    _frozenSessionType = _session.Type;
+                    _frozenSessionTrack = _session.Track;
+                    _frozenSessionTotalLaps = _session.TotalLaps;
+                    _frozenSessionStartedAt = _session.StartedAt;
+                    _frozenSessionEndedAt = _session.EndedAt ?? DateTime.UtcNow;
+                    _frozenWeatherCondition = _session.WeatherCondition;
+                    _frozenAirTempStart = _session.AirTempStart;
+                    _frozenAirTempEnd = _session.AirTempEnd;
+                    _frozenTrackTempStart = _session.TrackTempStart;
+                    _frozenTrackTempEnd = _session.TrackTempEnd;
+                    _frozenRainPercentageAvg = _session.RainPercentageAvg;
+                    _frozenWeatherChanges = _session.WeatherChanges != null
+                        ? new List<WeatherChange>(_session.WeatherChanges) : null;
                     global::SimHub.Logging.Current.Info(
-                        $"[PitLeague:F1_25] FinalClassification received: {_finalClassification.Count} cars");
+                        $"[PitLeague:F1_25] FinalClassification received: {_finalClassification.Count} cars | " +
+                        $"frozen session: type={_frozenSessionType} track={_frozenSessionTrack}");
                     break;
             }
         }
@@ -288,27 +329,32 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 frozenFastestLapIdx = _events.FastestLapDriverIdx;
             }
 
+            // Use frozen session metadata (captured at FinalClassification time)
+            // NOT the live _session which may have switched to "Other"/next track
+            var sessionType = _frozenSessionType ?? _session.Type ?? "Race";
+            var sessionTrack = _frozenSessionTrack ?? _session.Track ?? "Unknown";
+
             var snapshot = new RaceTelemetrySnapshot
             {
-                SessionUID = $"{_session.Track}_{_session.StartedAt?.ToString("yyyyMMddHHmmss") ?? "unknown"}",
+                SessionUID = $"{sessionTrack}_{(_frozenSessionStartedAt ?? _session.StartedAt)?.ToString("yyyyMMddHHmmss") ?? "unknown"}",
                 Game = "F1_25",
                 CapturedAt = DateTime.UtcNow,
                 Session = new SessionInfo
                 {
-                    Type = _session.Type ?? "Race",
-                    Track = _session.Track ?? "Unknown",
-                    TotalLaps = _session.TotalLaps > 0 ? _session.TotalLaps : (int?)null,
-                    StartedAt = _session.StartedAt,
-                    EndedAt = _session.EndedAt,
+                    Type = sessionType,
+                    Track = sessionTrack,
+                    TotalLaps = _frozenSessionTotalLaps > 0 ? _frozenSessionTotalLaps : (_session.TotalLaps > 0 ? _session.TotalLaps : (int?)null),
+                    StartedAt = _frozenSessionStartedAt ?? _session.StartedAt,
+                    EndedAt = _frozenSessionEndedAt ?? _session.EndedAt,
                     Weather = new WeatherInfo
                     {
-                        Condition = _session.WeatherCondition,
-                        AirTempStart = _session.AirTempStart,
-                        AirTempEnd = _session.AirTempEnd,
-                        TrackTempStart = _session.TrackTempStart,
-                        TrackTempEnd = _session.TrackTempEnd,
-                        RainPercentageAvg = _session.RainPercentageAvg,
-                        Changes = _session.WeatherChanges
+                        Condition = _frozenWeatherCondition ?? _session.WeatherCondition,
+                        AirTempStart = _frozenAirTempStart ?? _session.AirTempStart,
+                        AirTempEnd = _frozenAirTempEnd ?? _session.AirTempEnd,
+                        TrackTempStart = _frozenTrackTempStart ?? _session.TrackTempStart,
+                        TrackTempEnd = _frozenTrackTempEnd ?? _session.TrackTempEnd,
+                        RainPercentageAvg = _frozenRainPercentageAvg ?? _session.RainPercentageAvg,
+                        Changes = _frozenWeatherChanges ?? _session.WeatherChanges
                     }
                 }
             };
