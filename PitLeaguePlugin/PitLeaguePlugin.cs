@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.6.4";
+        public const string VERSION = "2.6.5";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -639,14 +639,37 @@ namespace PitLeague.SimHub
                 existingSession["results"] = Newtonsoft.Json.Linq.JToken.FromObject(newResults,
                     JsonSerializer.Create(new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include }));
 
-                // Update _pitleague metadata with UDP stats if available
-                Dictionary<string, int> udpStats = null;
-                if (_activeAdapter is F1_25_UdpAdapter f125)
-                    udpStats = f125.GetPacketCounts();
-                if (udpStats != null && existingPayload["_pitleague"] is Newtonsoft.Json.Linq.JObject pitleague)
+                // Update _pitleague envelope: adapter, richDataAvailable, udpStats
+                if (existingPayload["_pitleague"] is Newtonsoft.Json.Linq.JObject pitleague)
                 {
-                    pitleague["udpPacketsReceived"] = Newtonsoft.Json.Linq.JToken.FromObject(udpStats);
+                    pitleague["adapter"] = _activeAdapter.AdapterId;
+                    pitleague["richDataAvailable"] = Newtonsoft.Json.Linq.JToken.FromObject(_activeAdapter.RichDataAvailable);
                     pitleague["enrichedWithFinalClassification"] = true;
+
+                    Dictionary<string, int> udpStats = null;
+                    if (_activeAdapter is F1_25_UdpAdapter f125)
+                        udpStats = f125.GetPacketCounts();
+                    if (udpStats != null)
+                        pitleague["udpPacketsReceived"] = Newtonsoft.Json.Linq.JToken.FromObject(udpStats);
+                }
+
+                // Update session.weather from f125 snapshot (preserving type/track/sessionUID)
+                var w = snapshot.Session.Weather;
+                bool hasWeather = w != null && !string.IsNullOrEmpty(w.Condition);
+                if (hasWeather)
+                {
+                    existingSession["weather"] = Newtonsoft.Json.Linq.JToken.FromObject(
+                        new Dictionary<string, object>
+                        {
+                            ["condition"] = w.Condition,
+                            ["airTempStart"] = w.AirTempStart,
+                            ["airTempEnd"] = w.AirTempEnd,
+                            ["trackTempStart"] = w.TrackTempStart,
+                            ["trackTempEnd"] = w.TrackTempEnd,
+                            ["rainPercentageAvg"] = w.RainPercentageAvg,
+                            ["changes"] = w.Changes,
+                        },
+                        JsonSerializer.Create(new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include }));
                 }
 
                 // Atomic write
@@ -659,8 +682,9 @@ namespace PitLeague.SimHub
                 _resultJsonHasFinalClassification = true;
 
                 global::SimHub.Logging.Current.Info(
-                    $"[PitLeague] JSON enriquecido com FinalClassification (resultados oficiais): " +
-                    $"{snapshot.Drivers.Count} pilotos | session mantido: type={existingSession["type"]} track={existingSession["track"]}");
+                    $"[PitLeague] JSON enriquecido: adapter={_activeAdapter.AdapterId} | rich=true | " +
+                    $"weather={( hasWeather ? "ok" : "null" )} | " +
+                    $"session mantido type={existingSession["type"]} track={existingSession["track"]}");
             }
             catch (Exception ex)
             {
