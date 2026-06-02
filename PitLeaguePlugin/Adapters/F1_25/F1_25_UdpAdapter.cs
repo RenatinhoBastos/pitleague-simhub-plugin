@@ -58,8 +58,11 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private EventLog _events = new EventLog();
         private List<FinalClassificationEntry> _finalClassification;
 
-        // Stats for diagnostics
+        // Stats for diagnostics (guarded by _snapshotLock)
         private Dictionary<byte, int> _packetCounts = new Dictionary<byte, int>();
+
+        // Lock for thread-safe snapshot capture
+        private readonly object _snapshotLock = new object();
 
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
@@ -145,11 +148,14 @@ namespace PitLeague.SimHub.Adapters.F1_25
         {
             _session.Reset();
             _participants.Clear();
-            _lapBuffers.Clear();
-            _damageBuffers.Clear();
-            _events.Clear();
-            _finalClassification = null;
-            _packetCounts.Clear();
+            lock (_snapshotLock)
+            {
+                _lapBuffers.Clear();
+                _damageBuffers.Clear();
+                _events.Clear();
+                _finalClassification = null;
+                _packetCounts.Clear();
+            }
             global::SimHub.Logging.Current.Info("[PitLeague:F1_25] State reset for new session");
         }
 
@@ -176,9 +182,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                         var header = HeaderParser.Parse(buffer);
                         if (header.PacketFormat != 2025) continue;
 
-                        if (!_packetCounts.ContainsKey(header.PacketId))
-                            _packetCounts[header.PacketId] = 0;
-                        _packetCounts[header.PacketId]++;
+                        lock (_snapshotLock)
+                        {
+                            if (!_packetCounts.ContainsKey(header.PacketId))
+                                _packetCounts[header.PacketId] = 0;
+                            _packetCounts[header.PacketId]++;
+                        }
 
                         DispatchPacket(header, buffer);
                     }
@@ -228,16 +237,16 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     SessionDataParser.Apply(_session, bytes);
                     break;
                 case PacketIds.LapData:
-                    LapDataParser.Apply(_lapBuffers, bytes);
+                    lock (_snapshotLock) { LapDataParser.Apply(_lapBuffers, bytes); }
                     break;
                 case PacketIds.Event:
-                    EventParser.Apply(_events, bytes);
+                    lock (_snapshotLock) { EventParser.Apply(_events, bytes); }
                     break;
                 case PacketIds.Participants:
                     ParticipantsParser.Apply(_participants, bytes);
                     break;
                 case PacketIds.CarDamage:
-                    CarDamageParser.Apply(_damageBuffers, bytes);
+                    lock (_snapshotLock) { CarDamageParser.Apply(_damageBuffers, bytes); }
                     break;
                 case PacketIds.FinalClassification:
                     if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
@@ -246,7 +255,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             $"[PitLeague:F1_25] FinalClassification size {bytes.Length} != " +
                             $"{FinalClassificationParser.EXPECTED_PACKET_SIZE}. Validate offsets.");
                     }
-                    _finalClassification = FinalClassificationParser.Parse(bytes);
+                    lock (_snapshotLock)
+                    {
+                        _finalClassification = FinalClassificationParser.Parse(bytes);
+                    }
                     if (_session.EndedAt == null) _session.EndedAt = DateTime.UtcNow;
                     global::SimHub.Logging.Current.Info(
                         $"[PitLeague:F1_25] FinalClassification received: {_finalClassification.Count} cars");
@@ -258,8 +270,28 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
         public RaceTelemetrySnapshot GetSnapshot()
         {
-            if (_finalClassification == null || _finalClassification.Count == 0)
-                throw new InvalidOperationException("Final classification not yet received");
+            // Freeze all mutable collections under lock to prevent
+            // "Collection was modified" from concurrent UDP thread
+            List<FinalClassificationEntry> frozenClassification;
+            Dictionary<byte, LapBuffer> frozenLapBuffers;
+            Dictionary<byte, CarDamageBuffer> frozenDamageBuffers;
+            List<EventLog.PenaltyRecord> frozenAllPenalties;
+            byte? frozenFastestLapIdx;
+            List<int> frozenCollisionCounts;
+
+            lock (_snapshotLock)
+            {
+                if (_finalClassification == null || _finalClassification.Count == 0)
+                    throw new InvalidOperationException("Final classification not yet received");
+
+                frozenClassification = new List<FinalClassificationEntry>(_finalClassification);
+                frozenLapBuffers = new Dictionary<byte, LapBuffer>(_lapBuffers);
+                frozenDamageBuffers = new Dictionary<byte, CarDamageBuffer>(_damageBuffers);
+                frozenFastestLapIdx = _events.FastestLapDriverIdx;
+                // Snapshot penalty/collision data per driver
+                frozenAllPenalties = null; // will query per-driver below
+                frozenCollisionCounts = null;
+            }
 
             var snapshot = new RaceTelemetrySnapshot
             {
@@ -286,21 +318,27 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 }
             };
 
-            double leaderTime = _finalClassification
+            double leaderTime = frozenClassification
                 .Where(d => d.ResultStatus == 3)
                 .OrderBy(d => d.TotalRaceTime)
                 .Select(d => d.TotalRaceTime)
                 .FirstOrDefault();
 
-            for (byte idx = 0; idx < _finalClassification.Count; idx++)
+            for (byte idx = 0; idx < frozenClassification.Count; idx++)
             {
-                var fc = _finalClassification[idx];
+                var fc = frozenClassification[idx];
                 var participant = _participants.Get(idx);
                 if (participant == null) continue;
 
-                _lapBuffers.TryGetValue(idx, out var lapBuf);
-                _damageBuffers.TryGetValue(idx, out var dmgBuf);
-                var penalties = _events.PenaltiesFor(idx);
+                frozenLapBuffers.TryGetValue(idx, out var lapBuf);
+                frozenDamageBuffers.TryGetValue(idx, out var dmgBuf);
+                List<string> penalties;
+                int collisions;
+                lock (_snapshotLock)
+                {
+                    penalties = _events.PenaltiesFor(idx);
+                    collisions = _events.CollisionsFor(idx);
+                }
 
                 snapshot.Drivers.Add(new Adapters.DriverResult
                 {
@@ -310,7 +348,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     Team = participant.TeamId.ToString(),
                     Gap = "",
                     BestLapTime = FormatLapTime(fc.BestLapTimeInMS),
-                    FastestLap = _events.FastestLapDriverIdx.HasValue && _events.FastestLapDriverIdx.Value == idx,
+                    FastestLap = frozenFastestLapIdx.HasValue && frozenFastestLapIdx.Value == idx,
                     PolePosition = fc.GridPosition == 1,
                     PenaltySeconds = fc.PenaltiesTime,
                     GridPosition = fc.GridPosition,
@@ -324,7 +362,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     TyreStints = BuildStints(fc),
                     Incidents = new Adapters.DriverIncidents
                     {
-                        Collisions = _events.CollisionsFor(idx),
+                        Collisions = collisions,
                         TrackLimitsWarnings = lapBuf?.MaxWarnings ?? 0,
                         CornerCutting = lapBuf?.MaxCornerCutting ?? 0,
                         WingRepairs = dmgBuf?.WingRepairCount ?? 0,
@@ -336,8 +374,13 @@ namespace PitLeague.SimHub.Adapters.F1_25
             return snapshot;
         }
 
-        public Dictionary<string, int> GetPacketCounts() =>
-            _packetCounts.ToDictionary(kv => $"packetId_{kv.Key}", kv => kv.Value);
+        public Dictionary<string, int> GetPacketCounts()
+        {
+            lock (_snapshotLock)
+            {
+                return _packetCounts.ToDictionary(kv => $"packetId_{kv.Key}", kv => kv.Value);
+            }
+        }
 
         // ── Helpers ──────────────────────────────────────────────────────────────
 

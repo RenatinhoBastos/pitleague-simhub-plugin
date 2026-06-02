@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using GameReaderCommon;
@@ -20,7 +21,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.5.0-debug";
+        public const string VERSION = "2.5.1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -77,6 +78,12 @@ namespace PitLeague.SimHub
         private string _liveSessionKey = null;
         private static readonly HttpClient _liveLapHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         private volatile bool _sendingLiveLap = false;
+
+        // Atomic guard: ensures result dispatch fires exactly once per session
+        private int _resultDispatchGuard = 0;
+        // Debounce timer: waits for settle window after first FinalClassification
+        private System.Threading.Timer _resultDebounceTimer;
+        private const int RESULT_SETTLE_MS = 1500; // 1.5s settle window
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -190,6 +197,8 @@ namespace PitLeague.SimHub
 
             _heartbeatTimer?.Dispose();
             _heartbeatTimer = null;
+            _resultDebounceTimer?.Dispose();
+            _resultDebounceTimer = null;
 
             foreach (var adapter in _adapters)
             {
@@ -205,11 +214,21 @@ namespace PitLeague.SimHub
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
         {
             // ── Check if F1 25 UDP adapter has final classification ──────────
+            // Use atomic guard to fire exactly once per session (prevents trigger storm)
             if (_activeAdapter is F1_25_UdpAdapter f125 && f125.HasFinalClassification && !_resultSentThisSession)
             {
-                global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — disparando resultado");
-                TriggerResultReady("f125_final_classification");
-                _wasInRace = false;
+                if (Interlocked.CompareExchange(ref _resultDispatchGuard, 1, 0) == 0)
+                {
+                    global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 1.5s");
+                    // Debounce: wait 1.5s for all FinalClassification packets to arrive
+                    _resultDebounceTimer?.Dispose();
+                    _resultDebounceTimer = new System.Threading.Timer(_ =>
+                    {
+                        global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — disparando resultado");
+                        TriggerResultReady("f125_final_classification");
+                    }, null, RESULT_SETTLE_MS, System.Threading.Timeout.Infinite);
+                    _wasInRace = false;
+                }
                 return;
             }
 
@@ -290,6 +309,9 @@ namespace PitLeague.SimHub
                 _driverLapNumbers.Clear();
                 _liveSessionKey = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
                 _sendingLiveLap = false;
+                Interlocked.Exchange(ref _resultDispatchGuard, 0);
+                _resultDebounceTimer?.Dispose();
+                _resultDebounceTimer = null;
 
                 // Reset all adapters for new session
                 foreach (var adapter in _adapters)
@@ -490,6 +512,10 @@ namespace PitLeague.SimHub
 
                 var snapshot = _activeAdapter.GetSnapshot();
 
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Snapshot congelado: {snapshot.Drivers.Count} pilotos | " +
+                    $"session.type={snapshot.Session.Type} | track={snapshot.Session.Track}");
+
                 if (snapshot.Drivers.Count < Settings.MinDriversToSend)
                 {
                     UpdateStatus($"Apenas {snapshot.Drivers.Count} pilotos (mínimo: {Settings.MinDriversToSend})");
@@ -507,7 +533,7 @@ namespace PitLeague.SimHub
 
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
                 global::SimHub.Logging.Current.Info(
-                    $"[PitLeague] Enviando resultado: {snapshot.Drivers.Count} pilotos via {_activeAdapter.AdapterId} para {url}");
+                    $"[PitLeague] Enviando resultado: {snapshot.Drivers.Count} pilotos | results={snapshot.Drivers.Count} | via {_activeAdapter.AdapterId} para {url}");
 
                 UpdateStatus($"Enviando {snapshot.Drivers.Count} pilotos...");
 
