@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.6.0";
+        public const string VERSION = "2.6.1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -550,26 +550,96 @@ namespace PitLeague.SimHub
                 if (!_activeAdapter.HasFinalClassification) return;
                 if (string.IsNullOrEmpty(Settings.LeagueId)) return;
 
+                var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
+                if (!File.Exists(filePath))
+                {
+                    global::SimHub.Logging.Current.Warn("[PitLeague] EnrichJson: JSON file not found, skipping");
+                    return;
+                }
+
+                // Read existing JSON (has correct session.type/track/sessionUID from live state)
+                var existingJson = File.ReadAllText(filePath, Encoding.UTF8);
+                var existingPayload = Newtonsoft.Json.Linq.JObject.Parse(existingJson);
+                var existingSession = existingPayload["session"] as Newtonsoft.Json.Linq.JObject;
+
+                if (existingSession == null)
+                {
+                    global::SimHub.Logging.Current.Warn("[PitLeague] EnrichJson: existing JSON has no session object");
+                    return;
+                }
+
+                // Get FinalClassification snapshot for result data only
                 var snapshot = _activeAdapter.GetSnapshot();
 
+                // GUARD: if FinalClassification came with type != Race/Sprint, its session
+                // metadata is polluted (game already left the race). Log and skip session fields.
+                var fcType = snapshot.Session.Type ?? "Unknown";
+                var isValidSession = fcType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
+                    || fcType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (!isValidSession)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] FinalClassification tardia (type={fcType}) ignorada para campos de sessão — " +
+                        $"mantendo estado ao vivo {existingSession["type"]}/{existingSession["track"]}");
+                }
+
+                // Build new results array from FinalClassification (official positions/status)
+                var newResults = snapshot.Drivers.Select(d => new Dictionary<string, object>
+                {
+                    ["gamertag"] = d.Gamertag,
+                    ["position"] = d.Position,
+                    ["status"] = d.Status,
+                    ["team"] = d.Team,
+                    ["gap"] = d.Gap,
+                    ["bestLapTime"] = d.BestLapTime,
+                    ["fastestLap"] = d.FastestLap,
+                    ["polePosition"] = d.PolePosition,
+                    ["penaltySeconds"] = d.PenaltySeconds,
+                    ["qualifyingPosition"] = d.QualifyingPosition,
+                    ["gridPosition"] = d.GridPosition,
+                    ["topSpeed"] = d.TopSpeed,
+                    ["racePaceGapPct"] = d.RacePaceGapPct,
+                    ["numPenaltiesAccumulated"] = d.NumPenaltiesAccumulated,
+                    ["lapTimes"] = d.LapTimes,
+                    ["pitStopDetails"] = d.PitStops,
+                    ["tyreStints"] = d.TyreStints,
+                    ["incidents"] = d.Incidents != null ? new Dictionary<string, object>
+                    {
+                        ["collisions"] = d.Incidents.Collisions,
+                        ["trackLimitsWarnings"] = d.Incidents.TrackLimitsWarnings,
+                        ["cornerCutting"] = d.Incidents.CornerCutting,
+                        ["wingRepairs"] = d.Incidents.WingRepairs,
+                        ["penalties"] = d.Incidents.Penalties
+                    } : (object)null,
+                }).ToList();
+
+                // Replace ONLY results in the existing JSON — preserve session.type/track/sessionUID
+                existingSession["results"] = Newtonsoft.Json.Linq.JToken.FromObject(newResults,
+                    JsonSerializer.Create(new JsonSerializerSettings { NullValueHandling = NullValueHandling.Include }));
+
+                // Update _pitleague metadata with UDP stats if available
                 Dictionary<string, int> udpStats = null;
                 if (_activeAdapter is F1_25_UdpAdapter f125)
                     udpStats = f125.GetPacketCounts();
+                if (udpStats != null && existingPayload["_pitleague"] is Newtonsoft.Json.Linq.JObject pitleague)
+                {
+                    pitleague["udpPacketsReceived"] = Newtonsoft.Json.Linq.JToken.FromObject(udpStats);
+                    pitleague["enrichedWithFinalClassification"] = true;
+                }
 
-                var json = PayloadBuilder.Build(
-                    snapshot, _activeAdapter, Settings.LeagueId, VERSION, udpStats);
-
-                var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
+                // Atomic write
+                var enrichedJson = existingPayload.ToString(Formatting.None);
                 var tempPath = filePath + ".tmp";
-                File.WriteAllText(tempPath, json, Encoding.UTF8);
+                File.WriteAllText(tempPath, enrichedJson, Encoding.UTF8);
                 if (File.Exists(filePath)) File.Delete(filePath);
                 File.Move(tempPath, filePath);
                 _resultJsonPath = filePath;
                 _resultJsonHasFinalClassification = true;
 
                 global::SimHub.Logging.Current.Info(
-                    $"[PitLeague] JSON enriquecido com FinalClassification oficial: " +
-                    $"{snapshot.Drivers.Count} pilotos | track={snapshot.Session.Track}");
+                    $"[PitLeague] JSON enriquecido com FinalClassification (resultados oficiais): " +
+                    $"{snapshot.Drivers.Count} pilotos | session mantido: type={existingSession["type"]} track={existingSession["track"]}");
             }
             catch (Exception ex)
             {
@@ -610,6 +680,18 @@ namespace PitLeague.SimHub
                     global::SimHub.Logging.Current.Info(
                         $"[PitLeague] Lendo JSON persistido ({json.Length} chars): {preview}");
                 }
+
+                // Parse JSON to log critical fields before sending
+                try
+                {
+                    var parsed = Newtonsoft.Json.Linq.JObject.Parse(json);
+                    var sess = parsed["session"];
+                    var resultsCount = (sess?["results"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Enviando JSON: session.type={sess?["type"]} | track={sess?["track"]} | " +
+                        $"sessionUID={parsed["sessionUID"]} | results={resultsCount}");
+                }
+                catch { }
 
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
                 global::SimHub.Logging.Current.Info(
