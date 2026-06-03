@@ -75,6 +75,7 @@
     <Compile Include="Adapters\F1_25\Udp\ParticipantsPacket.cs"/>
     <Compile Include="Adapters\F1_25\Udp\EventPacket.cs"/>
     <Compile Include="Adapters\F1_25\Udp\CarDamagePacket.cs"/>
+    <Compile Include="Adapters\F1_25\Udp\SessionHistoryPacket.cs"/>
 
     <!-- F1 25 state buffers -->
     <Compile Include="Adapters\F1_25\State\SessionState.cs"/>
@@ -82,6 +83,7 @@
     <Compile Include="Adapters\F1_25\State\ParticipantsMap.cs"/>
     <Compile Include="Adapters\F1_25\State\EventLog.cs"/>
     <Compile Include="Adapters\F1_25\State\CarDamageBuffer.cs"/>
+    <Compile Include="Adapters\F1_25\State\SessionHistoryBuffer.cs"/>
 
     <!-- Generic fallback adapter -->
     <Compile Include="Adapters\Generic\GenericSimHubAdapter.cs"/>
