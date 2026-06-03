@@ -57,7 +57,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
             var buf = buffers[carIdx];
             buf.SetNumLaps(numLaps);
 
-            int lapCount = Math.Min(numLaps, MAX_LAPS);
+            int lapCount = Math.Min((int)numLaps, MAX_LAPS);
 
             for (int i = 0; i < lapCount; i++)
             {
