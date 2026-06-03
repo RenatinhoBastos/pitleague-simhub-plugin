@@ -32,6 +32,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
         public const byte CarStatus = 7;
         public const byte FinalClassification = 8;
         public const byte CarDamage = 10;
+        public const byte SessionHistory = 11;
     }
 
     public static class HeaderParser

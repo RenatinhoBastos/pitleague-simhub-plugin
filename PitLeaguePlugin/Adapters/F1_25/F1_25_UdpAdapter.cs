@@ -56,6 +56,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private Dictionary<byte, LapBuffer> _lapBuffers = new Dictionary<byte, LapBuffer>();
         private Dictionary<byte, CarDamageBuffer> _damageBuffers = new Dictionary<byte, CarDamageBuffer>();
         private EventLog _events = new EventLog();
+        private Dictionary<byte, SessionHistoryBuffer> _sessionHistoryBuffers = new Dictionary<byte, SessionHistoryBuffer>();
         private List<FinalClassificationEntry> _finalClassification;
 
         // Stats for diagnostics (guarded by _snapshotLock)
@@ -166,6 +167,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
             {
                 _lapBuffers.Clear();
                 _damageBuffers.Clear();
+                _sessionHistoryBuffers.Clear();
                 _events.Clear();
                 _finalClassification = null;
                 _packetCounts.Clear();
@@ -275,6 +277,17 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 case PacketIds.CarDamage:
                     lock (_snapshotLock) { CarDamageParser.Apply(_damageBuffers, bytes); }
                     break;
+                case PacketIds.SessionHistory:
+                    try
+                    {
+                        lock (_snapshotLock) { SessionHistoryParser.Apply(_sessionHistoryBuffers, bytes); }
+                    }
+                    catch (Exception shEx)
+                    {
+                        global::SimHub.Logging.Current.Warn(
+                            $"[PitLeague:F1_25] SessionHistory parse error (sectors will be null): {shEx.Message}");
+                    }
+                    break;
                 case PacketIds.FinalClassification:
                     if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
                     {
@@ -316,6 +329,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
             List<FinalClassificationEntry> frozenClassification;
             Dictionary<byte, LapBuffer> frozenLapBuffers;
             Dictionary<byte, CarDamageBuffer> frozenDamageBuffers;
+            Dictionary<byte, SessionHistoryBuffer> frozenHistoryBuffers;
             byte? frozenFastestLapIdx;
 
             lock (_snapshotLock)
@@ -326,6 +340,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 frozenClassification = new List<FinalClassificationEntry>(_finalClassification);
                 frozenLapBuffers = new Dictionary<byte, LapBuffer>(_lapBuffers);
                 frozenDamageBuffers = new Dictionary<byte, CarDamageBuffer>(_damageBuffers);
+                frozenHistoryBuffers = new Dictionary<byte, SessionHistoryBuffer>(_sessionHistoryBuffers);
                 frozenFastestLapIdx = _events.FastestLapDriverIdx;
             }
 
@@ -373,6 +388,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
                 frozenLapBuffers.TryGetValue(idx, out var lapBuf);
                 frozenDamageBuffers.TryGetValue(idx, out var dmgBuf);
+                frozenHistoryBuffers.TryGetValue(idx, out var histBuf);
                 List<PenaltyEntry> penalties;
                 int collisions;
                 lock (_snapshotLock)
@@ -381,7 +397,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     collisions = _events.CollisionsFor(idx);
                 }
 
-                snapshot.Drivers.Add(new Adapters.DriverResult
+                var driverResult = new Adapters.DriverResult
                 {
                     Gamertag = participant.Name,
                     Position = fc.Position,
@@ -409,7 +425,31 @@ namespace PitLeague.SimHub.Adapters.F1_25
                         WingRepairs = dmgBuf?.WingRepairCount ?? 0,
                         Penalties = penalties
                     }
-                });
+                };
+
+                // ADDITIVE overlay: apply definitive sector times from Session History packet.
+                // Isolated try/catch — failure leaves sectors as-is (null from LapBuffer).
+                try
+                {
+                    if (histBuf != null && driverResult.LapTimes != null)
+                    {
+                        foreach (var lapEntry in driverResult.LapTimes)
+                        {
+                            var hist = histBuf.GetLap(lapEntry.Lap);
+                            if (hist == null) continue;
+                            if (hist.S1MS > 0) lapEntry.S1 = FormatSector(hist.S1MS);
+                            if (hist.S2MS > 0) lapEntry.S2 = FormatSector(hist.S2MS);
+                            if (hist.S3MS > 0) lapEntry.S3 = FormatSector(hist.S3MS);
+                        }
+                    }
+                }
+                catch (Exception sectorEx)
+                {
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague:F1_25] Sector overlay failed for car {idx} (sectors stay null): {sectorEx.Message}");
+                }
+
+                snapshot.Drivers.Add(driverResult);
             }
 
             return snapshot;
@@ -424,6 +464,13 @@ namespace PitLeague.SimHub.Adapters.F1_25
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────────
+
+        private static string FormatSector(uint ms)
+        {
+            if (ms == 0) return null;
+            var sec = ms / 1000.0;
+            return sec.ToString("F3");
+        }
 
         private static string FormatLapTime(uint ms)
         {
