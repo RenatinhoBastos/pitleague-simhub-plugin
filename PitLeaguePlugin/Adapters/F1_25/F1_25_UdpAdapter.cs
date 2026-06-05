@@ -86,6 +86,21 @@ namespace PitLeague.SimHub.Adapters.F1_25
         /// <summary>Live session type from UDP SessionData @35 — updates every ~500ms.</summary>
         public string GetSessionType() => _session.Type;
 
+        /// <summary>
+        /// Discard the current FinalClassification without resetting _fcProcessed.
+        /// Used when FC arrived for a non-race session (e.g. quali): clears HasFinalClassification
+        /// so DataUpdate stops looping on the FC block, but keeps _fcProcessed=true to prevent
+        /// re-capturing the same quali FC. The next adapter.Reset() (on race entry) will clear
+        /// _fcProcessed to allow capturing the race FC.
+        /// </summary>
+        public void DiscardFinalClassification()
+        {
+            lock (_snapshotLock)
+            {
+                _finalClassification = null;
+            }
+        }
+
         public F1_25_UdpAdapter(int listenPort = 20778, int forwardPort = 20777, bool forwardEnabled = true)
         {
             _listenPort = listenPort;

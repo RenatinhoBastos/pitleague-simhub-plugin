@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.7.0-rc10";
+        public const string VERSION = "2.7.0-rc11";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -241,7 +241,8 @@ namespace PitLeague.SimHub
                     if (!isValidType)
                     {
                         global::SimHub.Logging.Current.Info(
-                            $"[PitLeague] FinalClassification ignorada: type '{_lastSessionType}' não é Race/Sprint.");
+                            $"[PitLeague] FC de '{_lastSessionType}' descartada — liberando para a próxima sessão.");
+                        f125.DiscardFinalClassification();
                         Interlocked.Exchange(ref _resultDispatchGuard, 0);
                         return;
                     }
