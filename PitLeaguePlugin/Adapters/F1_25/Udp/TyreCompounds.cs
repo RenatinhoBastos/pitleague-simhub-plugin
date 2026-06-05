@@ -55,6 +55,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
             }
         }
 
+        /// <summary>F1 25 session type → descriptive name. Race=15 (was 10 in F1 24).</summary>
         public static string MapSessionType(byte code)
         {
             switch (code)
@@ -69,17 +70,17 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                 case 7: return "Qualifying 3";
                 case 8: return "Short Qualifying";
                 case 9: return "One Shot Qualifying";
-                case 10: return "Race";
-                case 11: return "Race 2";
-                case 12: return "Race 3";
-                case 13: return "Time Trial";
-                case 14: return "Sprint Shootout 1";
-                case 15: return "Sprint Shootout 2";
-                case 16: return "Sprint Shootout 3";
-                case 17: return "Short Sprint Shootout";
-                case 18: return "One Shot Sprint Shootout";
+                case 10: return "Sprint Shootout 1";
+                case 11: return "Sprint Shootout 2";
+                case 12: return "Sprint Shootout 3";
+                case 13: return "Short Sprint Shootout";
+                case 14: return "One Shot Sprint Shootout";
+                case 15: return "Race";
+                case 16: return "Race 2";
+                case 17: return "Race 3";
+                case 18: return "Time Trial";
                 case 19: return "Sprint";
-                default: return "Unknown";
+                default: return $"Unknown({code})";
             }
         }
 

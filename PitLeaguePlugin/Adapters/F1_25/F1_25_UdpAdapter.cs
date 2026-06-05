@@ -79,7 +79,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Lock for thread-safe snapshot capture
         private readonly object _snapshotLock = new object();
 
+        private volatile bool _fcProcessed = false;
+
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
+
+        /// <summary>Live session type from UDP SessionData @35 — updates every ~500ms.</summary>
+        public string GetSessionType() => _session.Type;
 
         public F1_25_UdpAdapter(int listenPort = 20778, int forwardPort = 20777, bool forwardEnabled = true)
         {
@@ -172,6 +177,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 _finalClassification = null;
                 _packetCounts.Clear();
             }
+            _fcProcessed = false;
             // Reset frozen session metadata
             _frozenSessionType = null;
             _frozenSessionTrack = null;
@@ -289,6 +295,9 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     }
                     break;
                 case PacketIds.FinalClassification:
+                    if (_fcProcessed) break;
+                    _fcProcessed = true;
+
                     if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
                     {
                         global::SimHub.Logging.Current.Warn(

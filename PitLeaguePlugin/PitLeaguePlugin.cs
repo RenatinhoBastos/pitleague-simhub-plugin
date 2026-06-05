@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.7.0-rc1";
+        public const string VERSION = "2.7.0-rc10";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -92,6 +92,7 @@ namespace PitLeague.SimHub
         private bool _resultJsonHasFinalClassification = false;
         private DateTime _lastJsonWriteTime = DateTime.MinValue;
         private const int JSON_WRITE_INTERVAL_MS = 3000; // write every 3s max
+        private string _currentSessionUID;
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -235,6 +236,16 @@ namespace PitLeague.SimHub
             {
                 if (Interlocked.CompareExchange(ref _resultDispatchGuard, 1, 0) == 0)
                 {
+                    var isValidType = _lastSessionType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
+                        || _lastSessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!isValidType)
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague] FinalClassification ignorada: type '{_lastSessionType}' não é Race/Sprint.");
+                        Interlocked.Exchange(ref _resultDispatchGuard, 0);
+                        return;
+                    }
+
                     global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 1.5s");
                     // Debounce: wait 1.5s for all FinalClassification packets to arrive
                     _resultDebounceTimer?.Dispose();
@@ -282,15 +293,44 @@ namespace PitLeague.SimHub
             _lastReceivedData = data;
             _hasReceivedData = true;
 
-            var currentType = data.NewData.SessionTypeName ?? "";
+            // Session type: UDP @35 is PRIMARY (correct offset confirmed by hexdump).
+            // SimHub generic only as fallback when UDP is unknown (non-F1-25 games).
+            var genericType = data.NewData.SessionTypeName ?? "";
+            var udpType = (_activeAdapter is F1_25_UdpAdapter f125Udp) ? (f125Udp.GetSessionType() ?? "") : "";
+            var udpIsKnown = udpType.Length > 0 && udpType != "Other" && !udpType.StartsWith("Unknown");
+            var currentType = udpIsKnown ? udpType : genericType;
+
             var isRace = currentType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
                       || currentType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
             var isInRace = isRace && data.GameRunning;
 
-            // Log session type transitions
-            if (currentType != _lastSessionType)
+            // Log transitions; reset adapter only when ENTERING Race/Sprint
+            if (currentType != _lastSessionType && _lastSessionType.Length > 0)
             {
-                global::SimHub.Logging.Current.Info($"[PitLeague] Transicao session: '{_lastSessionType}' -> '{currentType}' | isInRace={isInRace} | wasInRace={_wasInRace} | GameRunning={data.GameRunning}");
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Transicao session: '{_lastSessionType}' -> '{currentType}' " +
+                    $"(generic='{genericType}' udp='{udpType}' src={(udpIsKnown ? "UDP" : "generic")}) | " +
+                    $"isInRace={isInRace} | wasInRace={_wasInRace} | GameRunning={data.GameRunning}");
+
+                if (isRace)
+                {
+                    foreach (var adapter in _adapters)
+                    {
+                        try { adapter.Reset(); } catch { }
+                    }
+                    Interlocked.Exchange(ref _resultDispatchGuard, 0);
+                    _resultDebounceTimer?.Dispose();
+                    _resultDebounceTimer = null;
+                    _resultJsonHasFinalClassification = false;
+                    _currentSessionUID = null;
+                }
+            }
+            else if (currentType != _lastSessionType)
+            {
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Transicao session: '{_lastSessionType}' -> '{currentType}' " +
+                    $"(generic='{genericType}' udp='{udpType}' src={(udpIsKnown ? "UDP" : "generic")}) | " +
+                    $"isInRace={isInRace} | wasInRace={_wasInRace} | GameRunning={data.GameRunning}");
             }
 
             // While in race, keep snapshotting data (for GenericSimHubAdapter)
@@ -332,6 +372,7 @@ namespace PitLeague.SimHub
                 _resultDebounceTimer = null;
                 _resultJsonHasFinalClassification = false;
                 _lastJsonWriteTime = DateTime.MinValue;
+                _currentSessionUID = null;
 
                 // Reset all adapters for new session
                 foreach (var adapter in _adapters)
@@ -549,6 +590,7 @@ namespace PitLeague.SimHub
                 if (File.Exists(filePath)) File.Delete(filePath);
                 File.Move(tempPath, filePath);
                 _resultJsonPath = filePath;
+                _currentSessionUID = snapshot.SessionUID;
 
                 if (Settings.DebugMode)
                 {
@@ -718,6 +760,21 @@ namespace PitLeague.SimHub
             try
             {
                 var json = File.ReadAllText(filePath, Encoding.UTF8);
+
+                // Block cross-session resubmit
+                try
+                {
+                    var parsed = Newtonsoft.Json.Linq.JObject.Parse(json);
+                    var jsonUID = parsed["sessionUID"]?.ToString();
+                    if (!string.IsNullOrEmpty(jsonUID) && (_currentSessionUID == null || jsonUID != _currentSessionUID))
+                    {
+                        global::SimHub.Logging.Current.Warn(
+                            $"[PitLeague] Reenvio bloqueado: JSON sessão '{jsonUID}', atual '{_currentSessionUID ?? "(null)"}'");
+                        UpdateStatus("Sem corrida nova capturada — resultado anterior não reenviado. / No new race captured — previous result not resent.");
+                        return false;
+                    }
+                }
+                catch { }
 
                 if (Settings.DebugMode)
                 {
