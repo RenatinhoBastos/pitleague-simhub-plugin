@@ -398,11 +398,13 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 }
             };
 
-            double leaderTime = frozenClassification
+            // Leader reference for gap calculations
+            var leader = frozenClassification
                 .Where(d => d.ResultStatus == 3)
                 .OrderBy(d => d.TotalRaceTime)
-                .Select(d => d.TotalRaceTime)
                 .FirstOrDefault();
+            double leaderTime = leader?.TotalRaceTime ?? 0;
+            byte leaderLaps = leader?.NumLaps ?? 0;
 
             for (byte idx = 0; idx < frozenClassification.Count; idx++)
             {
@@ -421,6 +423,9 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     collisions = _events.CollisionsFor(idx);
                 }
 
+                // Finalize pit detection before building snapshot
+                lapBuf?.FinalizePit();
+
                 var driverResult = new Adapters.DriverResult
                 {
                     Gamertag = participant.Name,
@@ -437,6 +442,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     RacePaceGapPct = (leaderTime > 0 && fc.ResultStatus == 3 && fc.TotalRaceTime > leaderTime)
                         ? Math.Round((fc.TotalRaceTime - leaderTime) / leaderTime * 100, 3)
                         : (double?)null,
+                    GapToLeaderSec = (fc.ResultStatus == 3 && leaderTime > 0 && fc.Position != 1
+                        && fc.NumLaps >= leaderLaps && fc.TotalRaceTime > leaderTime)
+                        ? Math.Round(fc.TotalRaceTime - leaderTime, 3)
+                        : (fc.ResultStatus == 3 && fc.Position == 1 ? 0 : (double?)null),
+                    LapsBehind = (fc.ResultStatus == 3 && leaderLaps > 0 && fc.NumLaps < leaderLaps)
+                        ? (int?)(leaderLaps - fc.NumLaps) : null,
                     NumPenaltiesAccumulated = fc.NumPenalties,
                     LapTimes = lapBuf?.GetLapTimes(),
                     PitStops = BuildPitStops(fc, lapBuf),
@@ -543,6 +554,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     {
                         Lap = pit.Lap,
                         DurationSec = Math.Round(pit.DurationMs / 1000.0, 1),
+                        StationarySec = Math.Round(pit.StationaryMs / 1000.0, 1),
                         TyreFrom = tyreFrom,
                         TyreTo = tyreTo,
                     });

@@ -35,6 +35,8 @@ namespace PitLeague.SimHub.Capture
                 ["gridPosition"] = d.GridPosition,
                 ["topSpeed"] = d.TopSpeed,
                 ["racePaceGapPct"] = d.RacePaceGapPct,
+                ["gapToLeaderSec"] = d.GapToLeaderSec,
+                ["lapsBehind"] = d.LapsBehind,
                 ["numPenaltiesAccumulated"] = d.NumPenaltiesAccumulated,
                 ["lapTimes"] = d.LapTimes,
                 ["pitStopDetails"] = d.PitStops,

@@ -59,6 +59,8 @@ namespace PitLeague.SimHub.Adapters
         public int? GridPosition { get; set; }
         public double? TopSpeed { get; set; }
         public double? RacePaceGapPct { get; set; }
+        public double? GapToLeaderSec { get; set; }
+        public int? LapsBehind { get; set; }
         public int? NumPenaltiesAccumulated { get; set; }
         public List<LapTimeEntry> LapTimes { get; set; }
         public List<PitStopEntry> PitStops { get; set; }
@@ -80,6 +82,7 @@ namespace PitLeague.SimHub.Adapters
     {
         public int Lap { get; set; }
         public double DurationSec { get; set; }
+        public double StationarySec { get; set; }
         public string TyreFrom { get; set; }
         public string TyreTo { get; set; }
     }

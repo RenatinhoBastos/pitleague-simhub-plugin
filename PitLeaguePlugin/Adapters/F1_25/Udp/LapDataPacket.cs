@@ -108,6 +108,9 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                     ushort pitLaneTimeMS = 0;
                     if (offset + 49 <= data.Length)
                         pitLaneTimeMS = BitConverter.ToUInt16(data, offset + 47);
+                    ushort pitStopTimerMS = 0;
+                    if (offset + 51 <= data.Length)
+                        pitStopTimerMS = BitConverter.ToUInt16(data, offset + 49);
 
                     float speedTrap = 0;
                     if (offset + 52 + 4 <= data.Length)
@@ -131,7 +134,8 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                         totalWarnings, cornerCutting,
                         pitStatus, penalties,
                         gridPosition,
-                        pitLaneTimeMS
+                        pitLaneTimeMS,
+                        pitStopTimerMS
                     );
                 }
                 catch { /* skip malformed entry */ }
