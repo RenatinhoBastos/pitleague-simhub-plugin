@@ -16,11 +16,18 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
         private int _pitStopCount;
         private bool _wasInPit;
 
+        // Pit stop details: lap + duration captured by transition detection
+        private readonly List<PitStopDetail> _pitStopDetails = new List<PitStopDetail>();
+        private ushort _currentPitLaneTimeMS;
+        private byte _pitEntryLap;
+        private bool _pitDiagLogged;
+
         public double? MaxSpeedTrap => _maxSpeedTrap;
         public int MaxWarnings => _maxWarnings;
         public int MaxCornerCutting => _maxCornerCutting;
         public byte GridPosition => _gridPosition;
         public int PitStopCount => _pitStopCount;
+        public List<PitStopDetail> PitStopDetails => _pitStopDetails;
 
         public void Update(
             byte lapNum, uint lastLapTimeMS,
@@ -28,7 +35,8 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             bool lapInvalid, float speedTrap,
             byte totalWarnings, byte cornerCutting,
             byte pitStatus, byte penalties,
-            byte gridPosition)
+            byte gridPosition,
+            ushort pitLaneTimeMS = 0)
         {
             // Track max speed across all laps
             if (speedTrap > 0 && (!_maxSpeedTrap.HasValue || speedTrap > _maxSpeedTrap.Value))
@@ -46,7 +54,35 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             // Detect pit stops by tracking pit status transitions
             bool inPit = pitStatus == 1 || pitStatus == 2;
             if (inPit && !_wasInPit)
+            {
                 _pitStopCount++;
+                _pitEntryLap = lapNum;
+                _currentPitLaneTimeMS = 0;
+            }
+            if (inPit && pitLaneTimeMS > _currentPitLaneTimeMS)
+            {
+                _currentPitLaneTimeMS = pitLaneTimeMS;
+            }
+            if (!inPit && _wasInPit)
+            {
+                // Exiting pit — record stop with lap + duration
+                _pitStopDetails.Add(new PitStopDetail
+                {
+                    Lap = _pitEntryLap > 0 ? _pitEntryLap : lapNum,
+                    DurationMs = _currentPitLaneTimeMS,
+                });
+                if (!_pitDiagLogged)
+                {
+                    _pitDiagLogged = true;
+                    try
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague:F1_25] Pit stop detected: lap={_pitEntryLap} pitLaneTimeMS={_currentPitLaneTimeMS}");
+                    }
+                    catch { }
+                }
+                _currentPitLaneTimeMS = 0;
+            }
             _wasInPit = inPit;
 
             // Record completed lap when lapNum advances
@@ -111,6 +147,12 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             public uint S2MS;
             public uint S3MS;
             public bool Valid;
+        }
+
+        public class PitStopDetail
+        {
+            public int Lap;
+            public ushort DurationMs;
         }
     }
 }

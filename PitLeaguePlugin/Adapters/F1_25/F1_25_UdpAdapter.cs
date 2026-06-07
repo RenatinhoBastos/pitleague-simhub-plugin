@@ -439,7 +439,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                         : (double?)null,
                     NumPenaltiesAccumulated = fc.NumPenalties,
                     LapTimes = lapBuf?.GetLapTimes(),
-                    PitStops = BuildPitStops(fc),
+                    PitStops = BuildPitStops(fc, lapBuf),
                     TyreStints = BuildStints(fc),
                     Incidents = new Adapters.DriverIncidents
                     {
@@ -521,19 +521,51 @@ namespace PitLeague.SimHub.Adapters.F1_25
             return stints;
         }
 
-        private static List<PitStopEntry> BuildPitStops(FinalClassificationEntry fc)
+        private static List<PitStopEntry> BuildPitStops(FinalClassificationEntry fc, LapBuffer lapBuf)
         {
-            if (fc.NumPitStops == 0 || fc.NumTyreStints <= 1) return null;
-            var stops = new List<PitStopEntry>();
-            for (int i = 0; i < fc.NumTyreStints - 1 && i < 7; i++)
+            // Primary source: LapBuffer pit transition detection (reliable, counts actual pit entry/exit)
+            if (lapBuf != null && lapBuf.PitStopCount > 0 && lapBuf.PitStopDetails.Count > 0)
             {
-                int pitLap = fc.TyreStintsEndLaps[i];
-                if (pitLap <= 0) continue;
-                var (fromCompound, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
-                var (toCompound, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
-                stops.Add(new PitStopEntry { Lap = pitLap, DurationSec = 0, TyreFrom = fromVisual, TyreTo = toVisual });
+                var stops = new List<PitStopEntry>();
+                for (int i = 0; i < lapBuf.PitStopDetails.Count; i++)
+                {
+                    var pit = lapBuf.PitStopDetails[i];
+                    // Cross-reference tyre compound change from FC stints
+                    string tyreFrom = "", tyreTo = "";
+                    if (i < fc.NumTyreStints - 1)
+                    {
+                        var (_, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
+                        var (_, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
+                        tyreFrom = fromVisual;
+                        tyreTo = toVisual;
+                    }
+                    stops.Add(new PitStopEntry
+                    {
+                        Lap = pit.Lap,
+                        DurationSec = Math.Round(pit.DurationMs / 1000.0, 1),
+                        TyreFrom = tyreFrom,
+                        TyreTo = tyreTo,
+                    });
+                }
+                return stops.Count > 0 ? stops : null;
             }
-            return stops;
+
+            // Fallback: FC data (fc.NumPitStops may be 0 even with real pit stops)
+            if (fc.NumTyreStints > 1)
+            {
+                var stops = new List<PitStopEntry>();
+                for (int i = 0; i < fc.NumTyreStints - 1 && i < 7; i++)
+                {
+                    int pitLap = fc.TyreStintsEndLaps[i];
+                    if (pitLap <= 0) continue;
+                    var (_, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
+                    var (_, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
+                    stops.Add(new PitStopEntry { Lap = pitLap, DurationSec = 0, TyreFrom = fromVisual, TyreTo = toVisual });
+                }
+                return stops.Count > 0 ? stops : null;
+            }
+
+            return null;
         }
     }
 }

@@ -103,8 +103,12 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                     // NumUnservedDriveThrough + StopGo: 2 bytes at offset+41,42
                     byte gridPosition = data[offset + 43];
                     // +44: driverStatus, +45: resultStatus,
-                    // +46: pitLaneTimerActive, +47-48: pitLaneTimeInLane, +49-50: pitStopTimer,
+                    // +46: pitLaneTimerActive, +47-48: pitLaneTimeInLaneInMS, +49-50: pitStopTimerInMS,
                     // +51: pitStopShouldServePen, +52-55: speedTrapFastestSpeed (float)
+                    ushort pitLaneTimeMS = 0;
+                    if (offset + 49 <= data.Length)
+                        pitLaneTimeMS = BitConverter.ToUInt16(data, offset + 47);
+
                     float speedTrap = 0;
                     if (offset + 52 + 4 <= data.Length)
                     {
@@ -126,7 +130,8 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                         speedTrap,
                         totalWarnings, cornerCutting,
                         pitStatus, penalties,
-                        gridPosition
+                        gridPosition,
+                        pitLaneTimeMS
                     );
                 }
                 catch { /* skip malformed entry */ }
