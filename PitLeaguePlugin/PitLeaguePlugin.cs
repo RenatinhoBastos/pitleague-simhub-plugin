@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.0-rc2";
+        public const string VERSION = "2.8.0-rc3";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -664,6 +664,8 @@ namespace PitLeague.SimHub
                     ["gridPosition"] = d.GridPosition,
                     ["topSpeed"] = d.TopSpeed,
                     ["racePaceGapPct"] = d.RacePaceGapPct,
+                    ["gapToLeaderSec"] = d.GapToLeaderSec,
+                    ["lapsBehind"] = d.LapsBehind,
                     ["numPenaltiesAccumulated"] = d.NumPenaltiesAccumulated,
                     ["lapTimes"] = d.LapTimes,
                     ["pitStopDetails"] = d.PitStops,

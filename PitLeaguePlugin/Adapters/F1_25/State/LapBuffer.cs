@@ -13,23 +13,25 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
         private byte _maxWarnings;
         private byte _maxCornerCutting;
         private byte _gridPosition;
-        private int _pitStopCount;
         private bool _wasInPit;
 
-        // Pit stop accumulation per episode
-        private readonly List<PitStopDetail> _pitStopDetails = new List<PitStopDetail>();
-        private bool _pitSeenThisLap;
-        private byte _pitEntryLap;
-        private ushort _maxPitLaneTimeMS;
-        private ushort _maxPitStopTimerMS;
+        // Pit stop accumulation — keyed by entry lap, idempotent (no destructive close)
+        private readonly Dictionary<int, PitStopDetail> _pitByLap = new Dictionary<int, PitStopDetail>();
+        private int _currentPitEntryLap = 0;
         private bool _pitDiagLogged;
+        private const int PIT_MIN_MS = 3000;
 
         public double? MaxSpeedTrap => _maxSpeedTrap;
         public int MaxWarnings => _maxWarnings;
         public int MaxCornerCutting => _maxCornerCutting;
         public byte GridPosition => _gridPosition;
-        public int PitStopCount => _pitStopCount;
-        public List<PitStopDetail> PitStopDetails => _pitStopDetails;
+
+        /// <summary>Valid pit stops (>3s lane time), ordered by lap. Idempotent — safe to call repeatedly.</summary>
+        public List<PitStopDetail> PitStopDetails =>
+            _pitByLap.Values.Where(d => d.DurationMs >= PIT_MIN_MS).OrderBy(d => d.Lap).ToList();
+
+        /// <summary>Count of valid pit stops.</summary>
+        public int PitStopCount => _pitByLap.Values.Count(d => d.DurationMs >= PIT_MIN_MS);
 
         public void Update(
             byte lapNum, uint lastLapTimeMS,
@@ -54,22 +56,42 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             if (gridPosition > 0)
                 _gridPosition = gridPosition;
 
-            // Pit stop accumulation: track max times while in pit
+            // Pit stop accumulation — idempotent, no destructive close
             bool inPit = pitStatus == 1 || pitStatus == 2;
             if (inPit)
             {
-                if (!_pitSeenThisLap) { _pitSeenThisLap = true; _pitEntryLap = lapNum; }
-                if (pitLaneTimeMS > _maxPitLaneTimeMS) _maxPitLaneTimeMS = pitLaneTimeMS;
-                if (pitStopTimerMS > _maxPitStopTimerMS) _maxPitStopTimerMS = pitStopTimerMS;
+                if (!_wasInPit) _currentPitEntryLap = lapNum;
+                if (pitLaneTimeMS > 0 && _currentPitEntryLap > 0)
+                {
+                    PitStopDetail d;
+                    if (!_pitByLap.TryGetValue(_currentPitEntryLap, out d))
+                    {
+                        d = new PitStopDetail { Lap = _currentPitEntryLap };
+                        _pitByLap[_currentPitEntryLap] = d;
+                    }
+                    if (pitLaneTimeMS > d.DurationMs)
+                    {
+                        bool wasBelowMin = d.DurationMs < PIT_MIN_MS;
+                        d.DurationMs = pitLaneTimeMS;
+                        if (wasBelowMin && d.DurationMs >= PIT_MIN_MS && !_pitDiagLogged)
+                        {
+                            _pitDiagLogged = true;
+                            try
+                            {
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague:F1_25] Pit VALIDO: lap={d.Lap} inLane={d.DurationMs}ms box={d.StationaryMs}ms");
+                            }
+                            catch { }
+                        }
+                    }
+                    if (pitStopTimerMS > d.StationaryMs) d.StationaryMs = pitStopTimerMS;
+                }
             }
             _wasInPit = inPit;
 
-            // Record completed lap when lapNum advances — also closes any pit from that lap
+            // Record completed lap when lapNum advances
             if (lapNum > _lastLapNum && lastLapTimeMS > 0)
             {
-                // Close pit episode from the lap that just ended (if any)
-                ClosePit();
-
                 int completedLap = _lastLapNum;
                 if (completedLap > 0)
                 {
@@ -86,41 +108,6 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
                 }
             }
             _lastLapNum = lapNum;
-        }
-
-        /// <summary>Close the last pit episode (call before snapshot, handles end-of-race).</summary>
-        public void FinalizePit()
-        {
-            if (_pitSeenThisLap) ClosePit();
-        }
-
-        private void ClosePit()
-        {
-            const int PIT_MIN_MS = 3000; // real pit lane never < ~14s; kills grid (0ms) and noise
-            if (_pitSeenThisLap && _maxPitLaneTimeMS >= PIT_MIN_MS)
-            {
-                _pitStopDetails.Add(new PitStopDetail
-                {
-                    Lap = _pitEntryLap > 0 ? _pitEntryLap : _lastLapNum,
-                    DurationMs = _maxPitLaneTimeMS,
-                    StationaryMs = _maxPitStopTimerMS,
-                });
-                _pitStopCount++;
-                if (!_pitDiagLogged)
-                {
-                    _pitDiagLogged = true;
-                    try
-                    {
-                        global::SimHub.Logging.Current.Info(
-                            $"[PitLeague:F1_25] Pit VALIDO: lap={_pitEntryLap} inLane={_maxPitLaneTimeMS}ms box={_maxPitStopTimerMS}ms");
-                    }
-                    catch { }
-                }
-            }
-            _pitSeenThisLap = false;
-            _maxPitLaneTimeMS = 0;
-            _maxPitStopTimerMS = 0;
-            _pitEntryLap = 0;
         }
 
         public List<Adapters.LapTimeEntry> GetLapTimes()

@@ -424,7 +424,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 }
 
                 // Finalize pit detection before building snapshot
-                lapBuf?.FinalizePit();
+                // PitStopDetails is now idempotent (computed on-demand from _pitByLap)
 
                 var driverResult = new Adapters.DriverResult
                 {
