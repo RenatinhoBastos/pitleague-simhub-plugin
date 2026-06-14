@@ -404,7 +404,7 @@ namespace PitLeague.SimHub
                 }
 
                 global::SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + currentType);
-                AddMilestone("session_detected", $"Corrida detectada: {_lastTrackName ?? \"?\"}", new { track = _lastTrackName, session = currentType });
+                AddMilestone("session_detected", "Corrida detectada: " + (_lastTrackName ?? "?"), new { track = _lastTrackName, session = currentType });
             }
 
             _wasInRace = isRace;
