@@ -42,6 +42,25 @@ namespace PitLeague.SimHub
         private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         private static readonly HttpClient _heartbeatHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
+        // Milestone feed (piggybacks on heartbeat)
+        private readonly List<object> _milestones = new List<object>();
+        private readonly object _milestoneLock = new object();
+        private const int MAX_MILESTONES = 8;
+
+        private void AddMilestone(string code, string label, object data = null)
+        {
+            lock (_milestoneLock)
+            {
+                _milestones.Add(new { code, label, at = DateTime.UtcNow.ToString("o"), data });
+                while (_milestones.Count > MAX_MILESTONES) _milestones.RemoveAt(0);
+            }
+        }
+
+        private object[] GetMilestonesCopy()
+        {
+            lock (_milestoneLock) { return _milestones.ToArray(); }
+        }
+
         private string _lastSessionType = "";
         private bool _wasInRace = false;
         private volatile bool _resultSentThisSession = false;
@@ -248,11 +267,13 @@ namespace PitLeague.SimHub
                     }
 
                     global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 6s (Session History)");
+                    AddMilestone("fc_received", "Bandeira! Processando resultado (6s)...", null);
                     // Debounce: wait 6s for Session History packets to complete all car laps
                     _resultDebounceTimer?.Dispose();
                     _resultDebounceTimer = new System.Threading.Timer(_ =>
                     {
                         global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — enriquecendo JSON e disparando resultado");
+                        AddMilestone("result_ready", "Resultado pronto", null);
                         EnrichJsonWithFinalClassification();
                         TriggerResultReady("f125_final_classification");
                     }, null, RESULT_SETTLE_MS, System.Threading.Timeout.Infinite);
@@ -342,6 +363,7 @@ namespace PitLeague.SimHub
                 DetectAndSendLiveLaps(data);
                 if (_lastValidDataInRace == DateTime.MinValue)
                     global::SimHub.Logging.Current.Info("[PitLeague] Race ativa, monitorando stall timeout");
+                    AddMilestone("race_active", $"Corrida ativa ({_lastTotalLaps} voltas)", new { laps = _lastTotalLaps });
                 _lastValidDataInRace = DateTime.UtcNow;
                 _stallLogged = false;
             }
@@ -382,6 +404,7 @@ namespace PitLeague.SimHub
                 }
 
                 global::SimHub.Logging.Current.Info("[PitLeague] Nova sessão de corrida detectada: " + currentType);
+                AddMilestone("session_detected", $"Corrida detectada: {_lastTrackName ?? \"?\"}", new { track = _lastTrackName, session = currentType });
             }
 
             _wasInRace = isRace;
@@ -955,6 +978,7 @@ namespace PitLeague.SimHub
                     PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), false);
 
                     global::SimHub.Logging.Current.Info($"[PitLeague] Resultado enviado OK | adapter={_activeAdapter.AdapterId} | HTTP {(int)response.StatusCode} | matched={result?.Matched ?? 0}/{result?.Total ?? 0}");
+                    AddMilestone("result_sent", $"Resultado enviado ({result?.Matched ?? 0}/{result?.Total ?? 0} reconhecidos)", new { matched = result?.Matched ?? 0, total = result?.Total ?? 0 });
                     return true;
                 }
                 else
@@ -968,6 +992,7 @@ namespace PitLeague.SimHub
                     {
                         _resultRejected = true;
                         global::SimHub.Logging.Current.Warn($"[PitLeague] Resultado REJEITADO pelo servidor (HTTP {statusCode}) — não será reenviado nesta sessão. Body: {body.Substring(0, Math.Min(500, body.Length))}");
+                        AddMilestone("result_rejected", $"Falha no envio: HTTP {statusCode}", new { status = statusCode });
                         UpdateStatus($"Resultado rejeitado (HTTP {statusCode}). Corrija o problema e tente na próxima corrida.");
                     }
                     else
@@ -976,6 +1001,7 @@ namespace PitLeague.SimHub
                         UpdateStatus(erro);
                         if (_sendAttempts >= MAX_SEND_ATTEMPTS)
                             global::SimHub.Logging.Current.Warn($"[PitLeague] SendResult: desistindo após {MAX_SEND_ATTEMPTS} tentativas falhas nesta sessão");
+                            AddMilestone("result_failed", "Desistiu após tentativas", null);
                     }
                     return false;
                 }
@@ -1067,7 +1093,8 @@ namespace PitLeague.SimHub
                     {
                         os = System.Environment.OSVersion.VersionString,
                         captured_laps = _lastTotalLaps,
-                        captured_track = _lastTrackName
+                        captured_track = _lastTrackName,
+                        milestones = GetMilestonesCopy()
                     }
                 };
 
