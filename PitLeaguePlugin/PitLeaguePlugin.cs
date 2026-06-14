@@ -84,7 +84,7 @@ namespace PitLeague.SimHub
         private int _resultDispatchGuard = 0;
         // Debounce timer: waits for settle window after first FinalClassification
         private System.Threading.Timer _resultDebounceTimer;
-        private const int RESULT_SETTLE_MS = 1500; // 1.5s settle window
+        private const int RESULT_SETTLE_MS = 6000; // 6s settle window (wait for Session History rodízio)
 
         // Persisted JSON result file
         private string _resultJsonDir;
@@ -247,8 +247,8 @@ namespace PitLeague.SimHub
                         return;
                     }
 
-                    global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 1.5s");
-                    // Debounce: wait 1.5s for all FinalClassification packets to arrive
+                    global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 6s (Session History)");
+                    // Debounce: wait 6s for Session History packets to complete all car laps
                     _resultDebounceTimer?.Dispose();
                     _resultDebounceTimer = new System.Threading.Timer(_ =>
                     {

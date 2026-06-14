@@ -19,6 +19,8 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
         private readonly Dictionary<int, PitStopDetail> _pitByLap = new Dictionary<int, PitStopDetail>();
         private int _currentPitEntryLap = 0;
         private bool _pitDiagLogged;
+        private ushort _lastPitLaneAccumulated = 0;
+        private ushort _currentPitBaseline = 0;
         private const int PIT_MIN_MS = 3000;
 
         public double? MaxSpeedTrap => _maxSpeedTrap;
@@ -56,11 +58,15 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             if (gridPosition > 0)
                 _gridPosition = gridPosition;
 
-            // Pit stop accumulation — idempotent, no destructive close
+            // Pit stop accumulation — idempotent, delta-based duration
             bool inPit = pitStatus == 1 || pitStatus == 2;
             if (inPit)
             {
-                if (!_wasInPit) _currentPitEntryLap = lapNum;
+                if (!_wasInPit)
+                {
+                    _currentPitEntryLap = lapNum;
+                    _currentPitBaseline = _lastPitLaneAccumulated;
+                }
                 if (pitLaneTimeMS > 0 && _currentPitEntryLap > 0)
                 {
                     PitStopDetail d;
@@ -69,22 +75,25 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
                         d = new PitStopDetail { Lap = _currentPitEntryLap };
                         _pitByLap[_currentPitEntryLap] = d;
                     }
-                    if (pitLaneTimeMS > d.DurationMs)
+                    // Delta from baseline (not raw cumulative)
+                    ushort delta = (ushort)(pitLaneTimeMS > _currentPitBaseline ? pitLaneTimeMS - _currentPitBaseline : pitLaneTimeMS);
+                    if (delta > d.DurationMs)
                     {
                         bool wasBelowMin = d.DurationMs < PIT_MIN_MS;
-                        d.DurationMs = pitLaneTimeMS;
+                        d.DurationMs = delta;
                         if (wasBelowMin && d.DurationMs >= PIT_MIN_MS && !_pitDiagLogged)
                         {
                             _pitDiagLogged = true;
                             try
                             {
                                 global::SimHub.Logging.Current.Info(
-                                    $"[PitLeague:F1_25] Pit VALIDO: lap={d.Lap} inLane={d.DurationMs}ms box={d.StationaryMs}ms");
+                                    $"[PitLeague:F1_25] Pit VALIDO: lap={d.Lap} delta={delta}ms raw={pitLaneTimeMS}ms baseline={_currentPitBaseline}ms box={d.StationaryMs}ms");
                             }
                             catch { }
                         }
                     }
                     if (pitStopTimerMS > d.StationaryMs) d.StationaryMs = pitStopTimerMS;
+                    _lastPitLaneAccumulated = pitLaneTimeMS;
                 }
             }
             _wasInPit = inPit;

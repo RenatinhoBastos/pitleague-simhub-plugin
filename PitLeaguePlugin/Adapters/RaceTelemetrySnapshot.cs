@@ -76,6 +76,7 @@ namespace PitLeague.SimHub.Adapters
         public string S2 { get; set; }
         public string S3 { get; set; }
         public bool Valid { get; set; }
+        public bool Synthetic { get; set; }
     }
 
     public class PitStopEntry

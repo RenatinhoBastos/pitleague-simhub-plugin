@@ -487,6 +487,101 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 snapshot.Drivers.Add(driverResult);
             }
 
+            // ── FIX: Fastest lap from FC (mark the classified driver with best lap time) ──
+            {
+                uint bestLapMs = uint.MaxValue;
+                int bestLapIdx = -1;
+                for (int fi = 0; fi < frozenClassification.Count; fi++)
+                {
+                    var fc = frozenClassification[fi];
+                    if (fc.ResultStatus == 3 && fc.BestLapTimeInMS > 0 && fc.BestLapTimeInMS < bestLapMs)
+                    {
+                        bestLapMs = fc.BestLapTimeInMS;
+                        bestLapIdx = fi;
+                    }
+                }
+                if (bestLapIdx >= 0 && bestLapIdx < snapshot.Drivers.Count)
+                {
+                    // Clear any previous fastest lap flag, set the real one
+                    foreach (var d in snapshot.Drivers) d.FastestLap = false;
+                    snapshot.Drivers[bestLapIdx].FastestLap = true;
+                    try
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague:F1_25] FastestLap from FC: P{frozenClassification[bestLapIdx].Position} {snapshot.Drivers[bestLapIdx].Gamertag} — {FormatLapTime(bestLapMs)}");
+                    }
+                    catch { }
+                }
+            }
+
+            // ── FIX: Synthetic last lap (fallback when Session History missed the final lap) ──
+            {
+                int syntheticCount = 0;
+                var syntheticCars = new List<string>();
+                for (int di = 0; di < snapshot.Drivers.Count && di < frozenClassification.Count; di++)
+                {
+                    var r = snapshot.Drivers[di];
+                    var fc = frozenClassification[di];
+                    if (r.LapTimes == null || r.LapTimes.Count == 0) continue;
+                    if (fc.NumLaps <= 0 || fc.TotalRaceTime <= 0) continue;
+                    if (r.LapTimes.Count >= fc.NumLaps) continue; // all laps present
+
+                    // Sum recorded lap times in ms
+                    double sumMs = 0;
+                    foreach (var lt in r.LapTimes)
+                    {
+                        try
+                        {
+                            if (lt.Time != null && lt.Time.Contains(":"))
+                            {
+                                var parts = lt.Time.Split(':');
+                                sumMs += double.Parse(parts[0]) * 60000 + double.Parse(parts[1]) * 1000;
+                            }
+                            else if (lt.Time != null)
+                            {
+                                sumMs += double.Parse(lt.Time) * 1000;
+                            }
+                        }
+                        catch { }
+                    }
+
+                    double totalMs = fc.TotalRaceTime * 1000; // TotalRaceTime is seconds (double)
+                    double remainingMs = totalMs - sumMs;
+                    int missingLaps = fc.NumLaps - r.LapTimes.Count;
+
+                    if (remainingMs > 1000 && remainingMs < 600000 && missingLaps > 0) // sanity: 1s-10min
+                    {
+                        double perLapMs = remainingMs / missingLaps;
+                        for (int m = 0; m < missingLaps; m++)
+                        {
+                            var ts = TimeSpan.FromMilliseconds(perLapMs);
+                            string timeStr = ts.TotalMinutes >= 1
+                                ? $"{(int)ts.TotalMinutes}:{ts.Seconds:D2}.{ts.Milliseconds:D3}"
+                                : $"{ts.Seconds}.{ts.Milliseconds:D3}";
+                            r.LapTimes.Add(new LapTimeEntry
+                            {
+                                Lap = r.LapTimes.Count + 1,
+                                Time = timeStr,
+                                S1 = null, S2 = null, S3 = null,
+                                Valid = true,
+                                Synthetic = true
+                            });
+                            syntheticCount++;
+                        }
+                        syntheticCars.Add(r.Gamertag);
+                    }
+                }
+                if (syntheticCount > 0)
+                {
+                    try
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague:F1_25] Synthetic laps: {syntheticCount} voltas geradas (carros: {string.Join(", ", syntheticCars)})");
+                    }
+                    catch { }
+                }
+            }
+
             return snapshot;
         }
 
