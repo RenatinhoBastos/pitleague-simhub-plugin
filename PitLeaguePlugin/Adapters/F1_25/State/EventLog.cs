@@ -26,6 +26,14 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
 
         public void AddPenalty(byte vehicleIdx, byte penaltyType, byte infringementType, byte time, byte lapNum)
         {
+            // Dedup: skip if identical penalty already recorded for same vehicle+lap+type+seconds
+            bool duplicate = _penalties.Exists(p =>
+                p.VehicleIdx == vehicleIdx &&
+                p.Lap == lapNum &&
+                p.PenaltyType == penaltyType &&
+                p.Seconds == time);
+            if (duplicate) return;
+
             _penalties.Add(new PenaltyRecord
             {
                 VehicleIdx = vehicleIdx,

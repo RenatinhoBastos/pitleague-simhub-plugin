@@ -20,6 +20,20 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
             }
         }
 
+        /// <summary>Decode the VisualCompound byte from FC TyreStintsVisual array.</summary>
+        public static string DecodeVisual(byte code)
+        {
+            switch (code)
+            {
+                case 16: return "soft";
+                case 17: return "medium";
+                case 18: return "hard";
+                case 7:  return "intermediate";
+                case 8:  return "wet";
+                default: return "unknown";
+            }
+        }
+
         public static string MapWeatherCode(byte code)
         {
             switch (code)

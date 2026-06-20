@@ -618,7 +618,8 @@ namespace PitLeague.SimHub.Adapters.F1_25
             int lapStart = 1;
             for (int i = 0; i < fc.NumTyreStints && i < 8; i++)
             {
-                var (compound, visual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
+                var (compound, _) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
+                string visual = TyreCompounds.DecodeVisual(fc.TyreStintsVisual[i]);
                 int lapEnd = i < fc.NumTyreStints - 1 ? fc.TyreStintsEndLaps[i] : fc.NumLaps;
                 if (lapEnd == 0) lapEnd = fc.NumLaps;
                 stints.Add(new TyreStintEntry { Compound = compound, VisualCompound = visual, LapStart = lapStart, LapEnd = lapEnd });
@@ -636,14 +637,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 for (int i = 0; i < lapBuf.PitStopDetails.Count; i++)
                 {
                     var pit = lapBuf.PitStopDetails[i];
-                    // Cross-reference tyre compound change from FC stints
+                    // Cross-reference tyre compound change from FC stints (use VisualCompound array)
                     string tyreFrom = "", tyreTo = "";
                     if (i < fc.NumTyreStints - 1)
                     {
-                        var (_, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
-                        var (_, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
-                        tyreFrom = fromVisual;
-                        tyreTo = toVisual;
+                        tyreFrom = TyreCompounds.DecodeVisual(fc.TyreStintsVisual[i]);
+                        tyreTo = TyreCompounds.DecodeVisual(fc.TyreStintsVisual[i + 1]);
                     }
                     stops.Add(new PitStopEntry
                     {
@@ -665,8 +664,8 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 {
                     int pitLap = fc.TyreStintsEndLaps[i];
                     if (pitLap <= 0) continue;
-                    var (_, fromVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i]);
-                    var (_, toVisual) = TyreCompounds.Decode(fc.TyreStintsActual[i + 1]);
+                    string fromVisual = TyreCompounds.DecodeVisual(fc.TyreStintsVisual[i]);
+                    string toVisual = TyreCompounds.DecodeVisual(fc.TyreStintsVisual[i + 1]);
                     stops.Add(new PitStopEntry { Lap = pitLap, DurationSec = 0, TyreFrom = fromVisual, TyreTo = toVisual });
                 }
                 return stops.Count > 0 ? stops : null;

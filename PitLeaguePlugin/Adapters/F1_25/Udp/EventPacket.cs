@@ -37,6 +37,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                         byte vehicleIdx = data[offset + 2];
                         byte otherVehicleIdx = data[offset + 3];
                         byte time = data[offset + 4];
+                        if (time == 0xFF) time = 0; // 0xFF = no time penalty in F1 spec
                         byte lapNum = data[offset + 5];
                         byte placesGained = data[offset + 6];
 

@@ -14,6 +14,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
         private byte _maxCornerCutting;
         private byte _gridPosition;
         private bool _wasInPit;
+        private int _pitEntryFrames; // consecutive frames in pit for debounce
 
         // Pit stop accumulation — keyed by entry lap, idempotent (no destructive close)
         private readonly Dictionary<int, PitStopDetail> _pitByLap = new Dictionary<int, PitStopDetail>();
@@ -22,6 +23,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
         private ushort _lastPitLaneAccumulated = 0;
         private ushort _currentPitBaseline = 0;
         private const int PIT_MIN_MS = 3000;
+        private const int PIT_DEBOUNCE_FRAMES = 3; // require 3 consecutive frames (~150ms) to confirm pit entry
 
         public double? MaxSpeedTrap => _maxSpeedTrap;
         public int MaxWarnings => _maxWarnings;
@@ -58,11 +60,13 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
             if (gridPosition > 0)
                 _gridPosition = gridPosition;
 
-            // Pit stop accumulation — idempotent, delta-based duration
+            // Pit stop accumulation — idempotent, delta-based duration, debounced entry
             bool inPit = pitStatus == 1 || pitStatus == 2;
             if (inPit)
             {
-                if (!_wasInPit)
+                _pitEntryFrames++;
+                // Only register pit entry after N consecutive frames (debounce glitches)
+                if (_pitEntryFrames == PIT_DEBOUNCE_FRAMES)
                 {
                     _currentPitEntryLap = lapNum;
                     _currentPitBaseline = _lastPitLaneAccumulated;
@@ -96,6 +100,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.State
                     _lastPitLaneAccumulated = pitLaneTimeMS;
                 }
             }
+            if (!inPit) _pitEntryFrames = 0;
             _wasInPit = inPit;
 
             // Record completed lap when lapNum advances
