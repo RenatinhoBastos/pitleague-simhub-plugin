@@ -26,6 +26,31 @@ jobs:
       - name: Restore NuGet packages
         run: nuget restore PitLeaguePlugin/PitLeaguePlugin.csproj
 
+      - name: Version guard (tag = csproj = const)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CSPROJ_VERSION=$(sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p' PitLeaguePlugin/PitLeaguePlugin.csproj | tr -d '[:space:]')
+          CONST_VERSION=$(sed -n 's/.*VERSION = "\(.*\)".*/\1/p' PitLeaguePlugin/PitLeaguePlugin.cs | tr -d '[:space:]')
+
+          echo "Tag:    $TAG_VERSION"
+          echo "csproj: $CSPROJ_VERSION"
+          echo "const:  $CONST_VERSION"
+
+          if [ "$TAG_VERSION" != "$CSPROJ_VERSION" ] || [ "$TAG_VERSION" != "$CONST_VERSION" ]; then
+            echo ""
+            echo "❌ ERRO: Versões divergentes!"
+            echo "   Tag git:        $TAG_VERSION"
+            echo "   .csproj Version: $CSPROJ_VERSION"
+            echo "   const VERSION:   $CONST_VERSION"
+            echo ""
+            echo "Os três valores DEVEM ser iguais. Corrija antes de publicar."
+            exit 1
+          fi
+
+          echo "✅ Versões OK: $TAG_VERSION"
+
       - name: Build Release
         run: msbuild PitLeaguePlugin/PitLeaguePlugin.csproj /p:Configuration=Release /p:Platform=AnyCPU /p:SIMHUB_PATH=..\lib\SimHubReferences
         shell: cmd
