@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.5-rc1";
+        public const string VERSION = "2.8.5-rc2";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -256,7 +256,9 @@ namespace PitLeague.SimHub
                 if (Interlocked.CompareExchange(ref _resultDispatchGuard, 1, 0) == 0)
                 {
                     var isValidType = _lastSessionType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
-                        || _lastSessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
+                        || _lastSessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0
+                        || (Settings.SendQualifying
+                            && _lastSessionType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0);
                     if (!isValidType)
                     {
                         global::SimHub.Logging.Current.Info(
@@ -760,6 +762,17 @@ namespace PitLeague.SimHub
             }
         }
 
+        // ─── Discard FC after qualifying send (success or definitive rejection) ──
+        private void DiscardIfQualifying()
+        {
+            if (_lastSessionType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0
+                && _activeAdapter is F1_25_UdpAdapter f125Discard)
+            {
+                f125Discard.DiscardFinalClassification();
+                global::SimHub.Logging.Current.Info("[PitLeague] FC de Qualifying descartada pós-envio (libera transição).");
+            }
+        }
+
         // ─── Send result from persisted JSON ────────────────────────────────
 
         public async Task<bool> SendResultFromJson()
@@ -848,6 +861,7 @@ namespace PitLeague.SimHub
                     _resultSentThisSession = true;
                     ResultReadyToSend = false;
                     IsConnected = true;
+                    DiscardIfQualifying();
 
                     this.SaveCommonSettings("PitLeagueSettings", Settings);
                     UpdateStatus("Dados enviados com sucesso! / Data sent successfully!" + matchInfo);
@@ -969,6 +983,7 @@ namespace PitLeague.SimHub
                     _resultSentThisSession = true;
                     ResultReadyToSend = false;
                     IsConnected = true;
+                    DiscardIfQualifying();
 
                     this.SaveCommonSettings("PitLeagueSettings", Settings);
                     UpdateStatus("Resultado enviado!" + matchInfo);
@@ -991,6 +1006,7 @@ namespace PitLeague.SimHub
                     if (statusCode >= 400 && statusCode < 500)
                     {
                         _resultRejected = true;
+                        DiscardIfQualifying();
                         global::SimHub.Logging.Current.Warn($"[PitLeague] Resultado REJEITADO pelo servidor (HTTP {statusCode}) — não será reenviado nesta sessão. Body: {body.Substring(0, Math.Min(500, body.Length))}");
                         AddMilestone("result_rejected", $"Falha no envio: HTTP {statusCode}", new { status = statusCode });
                         UpdateStatus($"Resultado rejeitado (HTTP {statusCode}). Corrija o problema e tente na próxima corrida.");

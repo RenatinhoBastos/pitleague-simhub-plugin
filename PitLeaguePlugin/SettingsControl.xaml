@@ -85,9 +85,10 @@
                       Foreground="White" Margin="0,0,0,8"
                       Click="ChkAutoSend_Click"/>
 
-            <CheckBox x:Name="ChkRaceOnly" Content="Apenas sessões de corrida (ignorar Treino/Quali)"
+            <CheckBox x:Name="ChkSendQualifying" Content="Enviar sessões de classificação (Seletiva)"
                       Foreground="White" Margin="0,0,0,8"
-                      Click="ChkRaceOnly_Click"/>
+                      ToolTip="Ative APENAS em ligas Seletiva. Faz o plugin enviar o resultado da sessão de classificação (quali). Em ligas normais, deixe desmarcado."
+                      Click="ChkSendQualifying_Click"/>
 
             <CheckBox x:Name="ChkDebug" Content="Modo debug (logs detalhados no SimHub)"
                       Foreground="White" Margin="0,0,0,16"
