@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.5-rc3";
+        public const string VERSION = "2.8.5-rc4";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -117,6 +117,7 @@ namespace PitLeague.SimHub
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
         public bool IsConnected { get; private set; } = false;
         public bool ResultReadyToSend { get; private set; } = false;
+        public bool IsSending => _sendingResult;
         public bool HasPersistedResult => _resultJsonPath != null && File.Exists(_resultJsonPath);
         public event EventHandler StatusChanged;
 
@@ -456,8 +457,25 @@ namespace PitLeague.SimHub
             ResultReadyToSend = true;
             PluginManager?.SetPropertyValue("PitLeague.ResultReadyToSend", this.GetType(), true);
 
-            // In v2.6.0, auto-send is disabled — manual only via "Enviar Resultado" button
-            UpdateStatus("Corrida finalizada! Clique 'Enviar Resultado'. / Race finished! Click 'Send Result'.");
+            if (Settings.AutoSendOnRaceEnd)
+            {
+                UpdateStatus("Corrida finalizada! Enviando automaticamente... / Auto-sending...");
+                _ = Task.Run(async () =>
+                {
+                    if (_sendingResult) return;
+                    _sendingResult = true;
+                    try { await SendResultFromJson(); }
+                    catch (Exception ex)
+                    {
+                        global::SimHub.Logging.Current.Error($"[PitLeague] Auto-send exception: {ex.Message}");
+                    }
+                    finally { _sendingResult = false; }
+                });
+            }
+            else
+            {
+                UpdateStatus("Corrida finalizada! Clique 'Enviar Resultado'. / Race finished! Click 'Send Result'.");
+            }
         }
 
         // ─── Force capture (for broadcasters/admins) ─────────────────────────

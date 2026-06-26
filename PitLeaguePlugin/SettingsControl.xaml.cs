@@ -212,6 +212,13 @@ namespace PitLeague.SimHub
                 return;
             }
 
+            // Guard: auto-send may be in flight
+            if (_plugin.IsSending)
+            {
+                global::SimHub.Logging.Current.Info("[PitLeague] Clique manual bloqueado — auto-send em voo");
+                return;
+            }
+
             BtnSendResult.IsEnabled = false;
             BtnSendResult.Content = "Enviando... / Sending...";
 
