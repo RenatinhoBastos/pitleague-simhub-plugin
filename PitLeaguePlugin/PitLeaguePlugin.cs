@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.5-rc2";
+        public const string VERSION = "2.8.5-rc3";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -276,6 +276,7 @@ namespace PitLeague.SimHub
                     {
                         global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — enriquecendo JSON e disparando resultado");
                         AddMilestone("result_ready", "Resultado pronto", null);
+                        PersistResultJson();
                         EnrichJsonWithFinalClassification();
                         TriggerResultReady("f125_final_classification");
                     }, null, RESULT_SETTLE_MS, System.Threading.Timeout.Infinite);
