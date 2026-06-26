@@ -85,9 +85,9 @@
                       Foreground="White" Margin="0,0,0,8"
                       Click="ChkAutoSend_Click"/>
 
-            <CheckBox x:Name="ChkSendQualifying" Content="Enviar sessões de classificação (Seletiva)"
+            <CheckBox x:Name="ChkSendQualifying" Content="Enviar classificação — APENAS ligas Seletiva"
                       Foreground="White" Margin="0,0,0,8"
-                      ToolTip="Ative APENAS em ligas Seletiva. Faz o plugin enviar o resultado da sessão de classificação (quali). Em ligas normais, deixe desmarcado."
+                      ToolTip="⚠️ Ligue SOMENTE em ligas do tipo Seletiva. Em campeonatos e 4fun, deixe DESLIGADO — senão a quali é rejeitada pelo servidor (HTTP 400)."
                       Click="ChkSendQualifying_Click"/>
 
             <CheckBox x:Name="ChkDebug" Content="Modo debug (logs detalhados no SimHub)"

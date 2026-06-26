@@ -58,6 +58,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private EventLog _events = new EventLog();
         private Dictionary<byte, SessionHistoryBuffer> _sessionHistoryBuffers = new Dictionary<byte, SessionHistoryBuffer>();
         private List<FinalClassificationEntry> _finalClassification;
+        private ulong _lastFcSessionUID = 0;
 
         // Stats for diagnostics (guarded by _snapshotLock)
         private Dictionary<byte, int> _packetCounts = new Dictionary<byte, int>();
@@ -193,6 +194,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 _packetCounts.Clear();
             }
             _fcProcessed = false;
+            _lastFcSessionUID = 0;
             // Reset frozen session metadata
             _frozenSessionType = null;
             _frozenSessionTrack = null;
@@ -310,8 +312,9 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     }
                     break;
                 case PacketIds.FinalClassification:
-                    if (_fcProcessed) break;
+                    if (_fcProcessed && header.SessionUID == _lastFcSessionUID) break;
                     _fcProcessed = true;
+                    _lastFcSessionUID = header.SessionUID;
 
                     if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
                     {
