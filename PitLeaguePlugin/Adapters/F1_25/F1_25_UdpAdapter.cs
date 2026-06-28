@@ -634,10 +634,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private static List<PitStopEntry> BuildPitStops(FinalClassificationEntry fc, LapBuffer lapBuf)
         {
             // Primary source: LapBuffer pit transition detection (reliable, counts actual pit entry/exit)
+            // Cap to FC stint count: N stints = N-1 real pit stops (excludes cooldown/end-of-race entries)
             if (lapBuf != null && lapBuf.PitStopCount > 0 && lapBuf.PitStopDetails.Count > 0)
             {
+                int maxPits = fc.NumTyreStints >= 1 ? fc.NumTyreStints - 1 : lapBuf.PitStopDetails.Count;
                 var stops = new List<PitStopEntry>();
-                for (int i = 0; i < lapBuf.PitStopDetails.Count; i++)
+                for (int i = 0; i < lapBuf.PitStopDetails.Count && i < maxPits; i++)
                 {
                     var pit = lapBuf.PitStopDetails[i];
                     // Cross-reference tyre compound change from FC stints (use VisualCompound array)

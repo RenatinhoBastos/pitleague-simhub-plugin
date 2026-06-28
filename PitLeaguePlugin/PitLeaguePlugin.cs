@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.5-rc5";
+        public const string VERSION = "2.8.5-rc6";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -841,17 +841,33 @@ namespace PitLeague.SimHub
                         $"[PitLeague] Lendo JSON persistido ({json.Length} chars): {preview}");
                 }
 
-                // Parse JSON to log critical fields before sending
+                // Parse JSON to validate and log critical fields before sending
+                int resultsCount = 0;
+                string guardTrack = "";
+                string guardUID = "";
                 try
                 {
                     var parsed = Newtonsoft.Json.Linq.JObject.Parse(json);
                     var sess = parsed["session"];
-                    var resultsCount = (sess?["results"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                    resultsCount = (sess?["results"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
+                    guardTrack = sess?["track"]?.ToString() ?? "";
+                    guardUID = parsed["sessionUID"]?.ToString() ?? "";
                     global::SimHub.Logging.Current.Info(
                         $"[PitLeague] Enviando JSON: session.type={sess?["type"]} | track={sess?["track"]} | " +
                         $"sessionUID={parsed["sessionUID"]} | results={resultsCount}");
                 }
                 catch { }
+
+                // Guard: block empty/invalid payloads (ghost sends after session reset)
+                if (resultsCount == 0
+                    || string.IsNullOrEmpty(guardTrack) || guardTrack == "Unknown"
+                    || guardUID.Contains("Unknown"))
+                {
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague] Envio abortado: payload sem resultados válidos (results={resultsCount} track={guardTrack} uid={guardUID})");
+                    UpdateStatus("Envio bloqueado: sem dados de corrida válidos. / Send blocked: no valid race data.");
+                    return false;
+                }
 
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
                 global::SimHub.Logging.Current.Info(
@@ -958,6 +974,19 @@ namespace PitLeague.SimHub
                 if (snapshot.Drivers.Count < Settings.MinDriversToSend)
                 {
                     UpdateStatus($"Apenas {snapshot.Drivers.Count} pilotos (mínimo: {Settings.MinDriversToSend})");
+                    return false;
+                }
+
+                // Guard: block ghost payloads with invalid session metadata
+                var snapTrack = snapshot.Session.Track ?? "";
+                var snapUID = snapshot.SessionUID ?? "";
+                if (snapshot.Drivers.Count == 0
+                    || string.IsNullOrEmpty(snapTrack) || snapTrack == "Unknown"
+                    || snapUID.Contains("Unknown"))
+                {
+                    global::SimHub.Logging.Current.Warn(
+                        $"[PitLeague] Envio abortado: payload sem resultados válidos (drivers={snapshot.Drivers.Count} track={snapTrack} uid={snapUID})");
+                    UpdateStatus("Envio bloqueado: sem dados de corrida válidos. / Send blocked: no valid race data.");
                     return false;
                 }
 
