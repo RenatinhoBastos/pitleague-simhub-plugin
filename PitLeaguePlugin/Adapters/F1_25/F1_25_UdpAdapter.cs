@@ -38,6 +38,9 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private Task _listenTask;
         private volatile bool _running;
 
+        // Format rejection diagnostics
+        private long _formatRejectCount;
+
         // Forward stats
         private long _forwardPacketsSent;
         private long _forwardErrors;
@@ -81,6 +84,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private readonly object _snapshotLock = new object();
 
         private volatile bool _fcProcessed = false;
+
+        // Last known valid session metadata — survives Reset() for FC freeze fallback
+        private string _lastKnownType;
+        private string _lastKnownTrack;
 
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
@@ -232,7 +239,14 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     try
                     {
                         var header = HeaderParser.Parse(buffer);
-                        if (header.PacketFormat != 2025) continue;
+                        if (header.PacketFormat != 2025)
+                        {
+                            var cnt = Interlocked.Increment(ref _formatRejectCount);
+                            if (cnt == 1 || cnt % 5000 == 0)
+                                global::SimHub.Logging.Current.Warn(
+                                    $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025) packetId={header.PacketId} rejectCount={cnt}");
+                            continue;
+                        }
 
                         lock (_snapshotLock)
                         {
@@ -287,6 +301,11 @@ namespace PitLeague.SimHub.Adapters.F1_25
             {
                 case PacketIds.Session:
                     SessionDataParser.Apply(_session, bytes);
+                    // Persist last known valid type/track (survives Reset for FC freeze fallback)
+                    if (!string.IsNullOrEmpty(_session.Type) && _session.Type != "Other")
+                        _lastKnownType = _session.Type;
+                    if (!string.IsNullOrEmpty(_session.Track) && !_session.Track.StartsWith("Track_"))
+                        _lastKnownTrack = _session.Track;
                     break;
                 case PacketIds.LapData:
                     lock (_snapshotLock) { LapDataParser.Apply(_lapBuffers, bytes); }
@@ -327,8 +346,11 @@ namespace PitLeague.SimHub.Adapters.F1_25
                         _finalClassification = FinalClassificationParser.Parse(bytes);
                     }
                     // Freeze session metadata NOW — before the game switches to "Other"/next track
-                    _frozenSessionType = _session.Type;
-                    _frozenSessionTrack = _session.Track;
+                    // Fallback to _lastKnown if _session value is invalid (same criteria as the setter)
+                    var typeValid = !string.IsNullOrEmpty(_session.Type) && _session.Type != "Other";
+                    var trackValid = !string.IsNullOrEmpty(_session.Track) && !_session.Track.StartsWith("Track_");
+                    _frozenSessionType = typeValid ? _session.Type : _lastKnownType;
+                    _frozenSessionTrack = trackValid ? _session.Track : _lastKnownTrack;
                     _frozenSessionTotalLaps = _session.TotalLaps;
                     _frozenSessionStartedAt = _session.StartedAt;
                     _frozenSessionEndedAt = _session.EndedAt ?? DateTime.UtcNow;

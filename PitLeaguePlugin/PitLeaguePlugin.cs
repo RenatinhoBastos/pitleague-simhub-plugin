@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.6";
+        public const string VERSION = "2.8.7";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -90,6 +90,7 @@ namespace PitLeague.SimHub
         private DateTime _lastValidDataInRace = DateTime.MinValue;
         private bool _stallLogged = false;
         private const int STALL_TIMEOUT_SECONDS = 10;
+        private const int RESULT_FC_WAIT_SECONDS = 22; // wait longer for FC before falling back to generic
 
         // Heartbeat
         private System.Threading.Timer _heartbeatTimer;
@@ -300,9 +301,10 @@ namespace PitLeague.SimHub
                         _stallLogged = true;
                     }
 
-                    if (stalledSeconds >= STALL_TIMEOUT_SECONDS && !_resultSentThisSession)
+                    if (stalledSeconds >= RESULT_FC_WAIT_SECONDS && !_resultSentThisSession
+                        && !_activeAdapter.HasFinalClassification)
                     {
-                        global::SimHub.Logging.Current.Info($"[PitLeague] Stall detectado em Race por {stalledSeconds:F0}s — considerando corrida finalizada | opponents={_lastOpponents?.Count ?? 0}");
+                        global::SimHub.Logging.Current.Info($"[PitLeague] Stall detectado em Race por {stalledSeconds:F0}s (FC wait {RESULT_FC_WAIT_SECONDS}s) — considerando corrida finalizada | opponents={_lastOpponents?.Count ?? 0}");
                         TriggerResultReady("stall_timeout");
                         _wasInRace = false;
                         _lastValidDataInRace = DateTime.MinValue;
@@ -445,7 +447,9 @@ namespace PitLeague.SimHub
             }
 
             // Detect transition: was in race → no longer in race
-            if (_wasInRace && !isRace && !_resultSentThisSession)
+            // Skip generic fallback if FC already received (let the rich path handle it)
+            if (_wasInRace && !isRace && !_resultSentThisSession
+                && !_activeAdapter.HasFinalClassification)
             {
                 TriggerResultReady("session_transition");
             }
