@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.5";
+        public const string VERSION = "2.8.6";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -66,6 +66,7 @@ namespace PitLeague.SimHub
         private volatile bool _resultSentThisSession = false;
         private volatile bool _resultRejected = false;
         private volatile bool _sendingResult = false;
+        private volatile bool _qualiSentThisSession = false;
         private DateTime _lastSendAttempt = DateTime.MinValue;
         private int _sendAttempts = 0;
         private const int MAX_SEND_ATTEMPTS = 3;
@@ -330,6 +331,10 @@ namespace PitLeague.SimHub
                       || currentType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0;
             var isInRace = isRace && data.GameRunning;
 
+            // Snapshot opponents during Qualifying (so best laps are available at Quali→Race transition)
+            var isQualifying = currentType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (isQualifying && data.GameRunning) SnapshotData(data);
+
             // Log transitions; reset adapter only when ENTERING Race/Sprint
             if (currentType != _lastSessionType && _lastSessionType.Length > 0)
             {
@@ -337,6 +342,73 @@ namespace PitLeague.SimHub
                     $"[PitLeague] Transicao session: '{_lastSessionType}' -> '{currentType}' " +
                     $"(generic='{genericType}' udp='{udpType}' src={(udpIsKnown ? "UDP" : "generic")}) | " +
                     $"isInRace={isInRace} | wasInRace={_wasInRace} | GameRunning={data.GameRunning}");
+
+                // ── Emit qualifying best laps on Qualifying→Race transition (before Reset) ──
+                if (isRace
+                    && _lastSessionType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0
+                    && !_qualiSentThisSession
+                    && _lastOpponents != null && _lastOpponents.Count >= Settings.MinDriversToSend
+                    && !string.IsNullOrEmpty(_lastTrackName) && _lastTrackName != "Unknown")
+                {
+                    _qualiSentThisSession = true;
+                    var qualiTrack = _lastTrackName;
+                    var qualiUid = $"{qualiTrack}_QUALI_{DateTime.UtcNow:yyyyMMddHHmmss}";
+                    var qualiResults = new List<object>();
+                    foreach (var o in _lastOpponents)
+                    {
+                        if (o.BestLapTime == null || o.BestLapTime <= TimeSpan.Zero) continue;
+                        var name = (o.Name ?? "").Replace("\0", "").Trim();
+                        if (string.IsNullOrEmpty(name)) continue;
+                        var ts = o.BestLapTime.Value;
+                        var timeStr = $"{(int)ts.TotalMinutes}:{ts.Seconds:D2}.{ts.Milliseconds:D3}";
+                        qualiResults.Add(new { gamertag = name, position = o.Position, status = "classified", bestLapTime = timeStr });
+                    }
+                    if (qualiResults.Count > 0)
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague] Emitindo quali ao vivo: {qualiResults.Count} pilotos | track={qualiTrack} | uid={qualiUid}");
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var payload = new
+                                {
+                                    schemaVersion = "pitleague-2.1",
+                                    pluginVersion = VERSION,
+                                    source = "simhub-plugin",
+                                    game = _lastGameName.Length > 0 ? _lastGameName : "Unknown",
+                                    sessionUID = qualiUid,
+                                    capturedAt = DateTime.UtcNow.ToString("O"),
+                                    leagueId = Settings.LeagueId,
+                                    session = new
+                                    {
+                                        type = "Qualifying",
+                                        track = qualiTrack,
+                                        totalLaps = (int?)null,
+                                        results = qualiResults,
+                                    },
+                                };
+                                var json = JsonConvert.SerializeObject(payload);
+                                var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
+                                var request = new HttpRequestMessage(HttpMethod.Post, url);
+                                request.Headers.Add("Authorization", "Bearer " + Settings.ApiKey);
+                                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                                var response = await _http.SendAsync(request);
+                                var body = await response.Content.ReadAsStringAsync();
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague] Quali ao vivo enviada | HTTP {(int)response.StatusCode} | {body.Substring(0, Math.Min(300, body.Length))}");
+                            }
+                            catch (Exception ex)
+                            {
+                                global::SimHub.Logging.Current.Warn($"[PitLeague] Quali ao vivo falhou: {ex.Message}");
+                            }
+                        });
+                    }
+                    else
+                    {
+                        global::SimHub.Logging.Current.Info("[PitLeague] Quali ao vivo abortada: nenhum piloto com BestLapTime válido");
+                    }
+                }
 
                 if (isRace)
                 {
@@ -384,6 +456,7 @@ namespace PitLeague.SimHub
                 _resultSentThisSession = false;
                 _resultRejected = false;
                 _sendingResult = false;
+                _qualiSentThisSession = false;
                 _lastSendAttempt = DateTime.MinValue;
                 _sendAttempts = 0;
                 ResultReadyToSend = false;
@@ -543,7 +616,8 @@ namespace PitLeague.SimHub
         {
             try
             {
-                _lastTrackName = (data.NewData.TrackName ?? "Unknown").Replace("\0", "").Trim();
+                var tn = (data.NewData.TrackName ?? "").Replace("\0", "").Trim();
+                if (!string.IsNullOrEmpty(tn) && tn != "Unknown") _lastTrackName = tn;
                 try { _lastTotalLaps = data.NewData.TotalLaps; } catch { _lastTotalLaps = 0; }
                 _lastSessionTypeName = (data.NewData.SessionTypeName ?? "Race").Replace("\0", "").Trim();
                 _lastGameName = Settings.GameDisplayName.Length > 0
