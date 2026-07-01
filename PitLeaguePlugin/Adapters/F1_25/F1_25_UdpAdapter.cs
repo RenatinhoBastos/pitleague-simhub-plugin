@@ -89,6 +89,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private string _lastKnownType;
         private string _lastKnownTrack;
 
+        // Live SessionUID from packet headers — updated every packet, survives Reset()
+        private volatile ulong _liveSessionUID;
+        public ulong CurrentLiveSessionUID => _liveSessionUID;
+
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
         /// <summary>Live session type from UDP SessionData @35 — updates every ~500ms.</summary>
@@ -247,6 +251,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
                                     $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025) packetId={header.PacketId} rejectCount={cnt}");
                             continue;
                         }
+
+                        // Track live SessionUID (survives Reset, used for session change detection)
+                        if (header.SessionUID != 0)
+                            _liveSessionUID = header.SessionUID;
 
                         lock (_snapshotLock)
                         {
