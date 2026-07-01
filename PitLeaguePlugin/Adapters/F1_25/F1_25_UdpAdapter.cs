@@ -89,6 +89,11 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private string _lastKnownType;
         private string _lastKnownTrack;
 
+        // Live SessionUID from packet headers — updated every packet, survives Reset()
+        // Uses long + Interlocked (volatile not allowed for ulong in .NET Framework 4.8)
+        private long _liveSessionUID;
+        public ulong CurrentLiveSessionUID => (ulong)Interlocked.Read(ref _liveSessionUID);
+
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
         /// <summary>Live session type from UDP SessionData @35 — updates every ~500ms.</summary>
@@ -247,6 +252,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
                                     $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025) packetId={header.PacketId} rejectCount={cnt}");
                             continue;
                         }
+
+                        // Track live SessionUID (survives Reset, used for session change detection)
+                        if (header.SessionUID != 0)
+                            Interlocked.Exchange(ref _liveSessionUID, (long)header.SessionUID);
 
                         lock (_snapshotLock)
                         {

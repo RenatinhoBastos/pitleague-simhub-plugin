@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.7";
+        public const string VERSION = "2.8.8";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -103,6 +103,9 @@ namespace PitLeague.SimHub
 
         // Atomic guard: ensures result dispatch fires exactly once per session
         private int _resultDispatchGuard = 0;
+
+        // Session-proof reset: track last UID that triggered a reset
+        private ulong _lastResetSessionUID = 0;
         // Debounce timer: waits for settle window after first FinalClassification
         private System.Threading.Timer _resultDebounceTimer;
         private const int RESULT_SETTLE_MS = 6000; // 6s settle window (wait for Session History rodízio)
@@ -321,6 +324,33 @@ namespace PitLeague.SimHub
             // Store last received data for ForceCaptureCurrentState
             _lastReceivedData = data;
             _hasReceivedData = true;
+
+            // ── Session-proof reset: detect new session by UDP SessionUID change ──
+            if (_activeAdapter is F1_25_UdpAdapter f125Uid)
+            {
+                var liveUID = f125Uid.CurrentLiveSessionUID;
+                if (liveUID != 0 && liveUID != _lastResetSessionUID)
+                {
+                    _lastResetSessionUID = liveUID;
+                    _resultSentThisSession = false;
+                    _resultRejected = false;
+                    _sendingResult = false;
+                    _qualiSentThisSession = false;
+                    _lastSendAttempt = DateTime.MinValue;
+                    _sendAttempts = 0;
+                    ResultReadyToSend = false;
+                    _lastValidDataInRace = DateTime.MinValue;
+                    _stallLogged = false;
+                    Interlocked.Exchange(ref _resultDispatchGuard, 0);
+                    _resultDebounceTimer?.Dispose();
+                    _resultDebounceTimer = null;
+                    _resultJsonHasFinalClassification = false;
+                    _lastJsonWriteTime = DateTime.MinValue;
+                    _currentSessionUID = null;
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Nova sessão detectada (UID mudou: {liveUID}) — estado de envio resetado");
+                }
+            }
 
             // Session type: UDP @35 is PRIMARY (correct offset confirmed by hexdump).
             // SimHub generic only as fallback when UDP is unknown (non-F1-25 games).
