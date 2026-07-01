@@ -41,6 +41,39 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Format rejection diagnostics
         private long _formatRejectCount;
 
+        // Hexdump capture: 1 sample per PacketId per format (diagnostic, not production)
+        private readonly Dictionary<byte, int> _hexdumpDoneByPacketId = new Dictionary<byte, int>();
+        private readonly Dictionary<byte, int> _hexdumpDone2025ByPacketId = new Dictionary<byte, int>();
+        private static readonly HashSet<byte> _hexdumpTargetIds = new HashSet<byte>
+        {
+            PacketIds.Session,                // 1
+            PacketIds.LapData,                // 2
+            PacketIds.Participants,            // 4
+            PacketIds.SessionHistory,          // 11
+            PacketIds.FinalClassification,     // 8
+        };
+        private static readonly Dictionary<byte, int> _hexdumpBytesPerPacket = new Dictionary<byte, int>
+        {
+            { PacketIds.Session, 64 },
+            { PacketIds.LapData, 80 },
+            { PacketIds.Participants, 80 },
+            { PacketIds.SessionHistory, 64 },
+            { PacketIds.FinalClassification, 80 },
+        };
+        private static readonly Dictionary<byte, string> _hexdumpPacketNames = new Dictionary<byte, string>
+        {
+            { PacketIds.Session, "Session" },
+            { PacketIds.LapData, "LapData" },
+            { PacketIds.Participants, "Participants" },
+            { PacketIds.SessionHistory, "SessionHistory" },
+            { PacketIds.FinalClassification, "FinalClassification" },
+        };
+        private static readonly Dictionary<byte, int> _hexdumpExpectedSizes = new Dictionary<byte, int>
+        {
+            { PacketIds.FinalClassification, FinalClassificationParser.EXPECTED_PACKET_SIZE },
+            { PacketIds.SessionHistory, SessionHistoryParser.EXPECTED_PACKET_SIZE },
+        };
+
         // Forward stats
         private long _forwardPacketsSent;
         private long _forwardErrors;
@@ -250,6 +283,18 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             if (cnt == 1 || cnt % 5000 == 0)
                                 global::SimHub.Logging.Current.Warn(
                                     $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025) packetId={header.PacketId} rejectCount={cnt}");
+                            // Hexdump: capture 1 sample per target PacketId for format comparison
+                            if (_hexdumpTargetIds.Contains(header.PacketId))
+                            {
+                                lock (_snapshotLock)
+                                {
+                                    if (!_hexdumpDoneByPacketId.ContainsKey(header.PacketId))
+                                    {
+                                        _hexdumpDoneByPacketId[header.PacketId] = 1;
+                                        LogHexdump(header.PacketFormat, header.PacketId, buffer);
+                                    }
+                                }
+                            }
                             continue;
                         }
 
@@ -262,6 +307,19 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             if (!_packetCounts.ContainsKey(header.PacketId))
                                 _packetCounts[header.PacketId] = 0;
                             _packetCounts[header.PacketId]++;
+                        }
+
+                        // Hexdump baseline: capture 1 sample per target PacketId for format=2025
+                        if (_hexdumpTargetIds.Contains(header.PacketId))
+                        {
+                            lock (_snapshotLock)
+                            {
+                                if (!_hexdumpDone2025ByPacketId.ContainsKey(header.PacketId))
+                                {
+                                    _hexdumpDone2025ByPacketId[header.PacketId] = 1;
+                                    LogHexdump(2025, header.PacketId, buffer);
+                                }
+                            }
                         }
 
                         DispatchPacket(header, buffer);
@@ -280,6 +338,29 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     global::SimHub.Logging.Current.Warn(
                         $"[PitLeague:F1_25] UDP receive error: {ex.Message}");
                 }
+            }
+        }
+
+        private void LogHexdump(ushort format, byte packetId, byte[] buffer)
+        {
+            try
+            {
+                var name = _hexdumpPacketNames.ContainsKey(packetId) ? _hexdumpPacketNames[packetId] : $"Unknown_{packetId}";
+                int maxBytes = _hexdumpBytesPerPacket.ContainsKey(packetId) ? _hexdumpBytesPerPacket[packetId] : 64;
+                int n = Math.Min(maxBytes, buffer.Length);
+                string expected = _hexdumpExpectedSizes.ContainsKey(packetId) ? $" expectedLength={_hexdumpExpectedSizes[packetId]}" : "";
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague:HEXDUMP] format={format} packetId={packetId} packetName={name} length={buffer.Length}{expected}");
+                for (int off = 0; off < n; off += 16)
+                {
+                    int lineLen = Math.Min(16, n - off);
+                    var hex = BitConverter.ToString(buffer, off, lineLen).Replace("-", " ");
+                    global::SimHub.Logging.Current.Info($"[PitLeague:HEXDUMP]   [{off:X4}] {hex}");
+                }
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Warn($"[PitLeague:HEXDUMP] error: {ex.Message}");
             }
         }
 
