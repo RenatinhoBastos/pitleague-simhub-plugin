@@ -41,10 +41,10 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Format rejection diagnostics
         private long _formatRejectCount;
 
-        // Format latch: prefer 2026 when dual-broadcast detected
-        private ushort _sessionFormat;        // 0=unknown, 2025, 2026
-        private ulong _sessionFormatUID;      // sessionUID that set the latch
-        private bool _formatLatchLogged;
+        // Format latch: prefer 2026 via global decay (drop 2025 while 2026 is recent)
+        private DateTime _lastFormat2026SeenUtc = DateTime.MinValue;
+        private bool _format2026Active;       // true when currently dropping 2025
+        private const int FORMAT_DECAY_SECONDS = 10;
 
         // Hexdump capture: 1 sample per PacketId per format (diagnostic, not production)
         private readonly Dictionary<byte, int> _hexdumpDoneByPacketId = new Dictionary<byte, int>();
@@ -293,33 +293,30 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             continue;
                         }
 
-                        // Format latch: new session resets latch
-                        if (header.SessionUID != 0 && header.SessionUID != _sessionFormatUID)
+                        // Format latch: global decay — prefer 2026 while recently seen
+                        if (header.PacketFormat == 2026)
                         {
-                            _sessionFormat = 0;
-                            _sessionFormatUID = header.SessionUID;
-                            _formatLatchLogged = false;
-                        }
-
-                        // Latch to 2026 on first 2026 packet (dual-broadcast: prefer 2026)
-                        if (header.PacketFormat == 2026 && _sessionFormat != 2026)
-                        {
-                            _sessionFormat = 2026;
-                            if (!_formatLatchLogged)
+                            _lastFormat2026SeenUtc = DateTime.UtcNow;
+                            if (!_format2026Active)
                             {
-                                _formatLatchLogged = true;
+                                _format2026Active = true;
                                 global::SimHub.Logging.Current.Info(
-                                    $"[PitLeague:F1_25] Dual-broadcast detectado, usando format 2026 (sessionUID={header.SessionUID})");
+                                    "[PitLeague:F1_25] Dual-broadcast detectado, priorizando format 2026");
                             }
                         }
-                        else if (_sessionFormat == 0 && header.PacketFormat == 2025)
+                        else if (header.PacketFormat == 2025)
                         {
-                            _sessionFormat = 2025; // pure 2025 session
+                            // Drop 2025 while 2026 was seen within the decay window
+                            if (_format2026Active)
+                            {
+                                if ((DateTime.UtcNow - _lastFormat2026SeenUtc).TotalSeconds < FORMAT_DECAY_SECONDS)
+                                    continue; // silently drop
+                                // Decay expired — 2026 stream stopped, fall back to 2025
+                                _format2026Active = false;
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague:F1_25] Format 2026 ausente há {FORMAT_DECAY_SECONDS}s, voltando a aceitar 2025");
+                            }
                         }
-
-                        // Drop 2025 when latched to 2026 (avoid processing same data twice)
-                        if (_sessionFormat == 2026 && header.PacketFormat == 2025)
-                            continue;
 
                         // Track live SessionUID (survives Reset, used for session change detection)
                         if (header.SessionUID != 0)
