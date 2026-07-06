@@ -10,34 +10,51 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
     /// </summary>
     public static class ParticipantsParser
     {
-        // F1 25 entry structure (57 bytes):
-        //   aiControlled (1), driverId (1), networkId (1), teamId (1), myTeam (1), raceNumber (1),
-        //   nationality (1), name (32), yourTelemetry (1), showOnlineNames (1), techLevel (1),
-        //   platform (1), + additional F1 25 fields (18 trailing bytes total)
-        private const int ENTRY_SIZE = 57;
-        private const int NAME_OFFSET = 7;   // after nationality at +6
-        private const int NAME_LENGTH = 32;  // F1 25: m_name[32] (was 48 in F1 24)
+        // F1 2025 entry structure (57 bytes):
+        //   +0 aiControlled (1), +1 driverId (1), +2 networkId (1), +3 teamId (1),
+        //   +4 myTeam (1), +5 raceNumber (1), +6 nationality (1),
+        //   +7 name (32), ... trailing fields
+        // F1 2026 entry structure (60 bytes):
+        //   +0 aiControlled (1), +1-2 driverId (uint16), +3-4 networkId (uint16),
+        //   +5-6 teamId (uint16), +7 myTeam (1), +8 raceNumber (1), +9 nationality (1),
+        //   +10 name (32), ... trailing fields
+        private const int ENTRY_SIZE_2025 = 57;
+        private const int NAME_OFFSET_2025 = 7;
+        private const int ENTRY_SIZE_2026 = 60;
+        private const int NAME_OFFSET_2026 = 10;
+        private const int NAME_LENGTH = 32;
 
-        public static void Apply(State.ParticipantsMap map, byte[] data)
+        public static void Apply(State.ParticipantsMap map, byte[] data, bool is2026 = false)
         {
             if (data.Length < PacketHeader.SIZE + 1) return;
+
+            int entrySize = is2026 ? ENTRY_SIZE_2026 : ENTRY_SIZE_2025;
+            int nameOffset = is2026 ? NAME_OFFSET_2026 : NAME_OFFSET_2025;
 
             int offset = PacketHeader.SIZE;
             byte numActiveCars = data[offset];
             offset += 1;
 
-            for (byte carIdx = 0; carIdx < numActiveCars && offset + ENTRY_SIZE <= data.Length; carIdx++)
+            for (byte carIdx = 0; carIdx < numActiveCars && offset + entrySize <= data.Length; carIdx++)
             {
                 byte aiControlled = data[offset];
-                byte driverId = data[offset + 1];
-                byte networkId = data[offset + 2];
-                byte teamId = data[offset + 3];
-                byte nationality = data[offset + 6];
-                byte raceNumber = data[offset + 5];
+                byte teamId, raceNumber, nationality;
+                if (is2026)
+                {
+                    // 2026: driverId/networkId/teamId are uint16
+                    teamId = data[offset + 5]; // low byte of uint16 teamId
+                    raceNumber = data[offset + 8];
+                    nationality = data[offset + 9];
+                }
+                else
+                {
+                    teamId = data[offset + 3];
+                    raceNumber = data[offset + 5];
+                    nationality = data[offset + 6];
+                }
 
-                // Name: 32 bytes at offset+7, null-terminated UTF-8
-                // Strip ALL C0 control chars (\u0000-\u001F) — not just \0
-                string rawName = Encoding.UTF8.GetString(data, offset + NAME_OFFSET, NAME_LENGTH);
+                // Name: 32 bytes at nameOffset, null-terminated UTF-8
+                string rawName = Encoding.UTF8.GetString(data, offset + nameOffset, NAME_LENGTH);
                 string name = StripControlChars(rawName).Trim();
 
                 map.Set(carIdx, new State.ParticipantInfo
@@ -46,11 +63,11 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
                     TeamId = teamId,
                     RaceNumber = raceNumber,
                     IsAI = aiControlled == 1,
-                    DriverId = driverId,
-                    NetworkId = networkId
+                    DriverId = is2026 ? data[offset + 1] : data[offset + 1],
+                    NetworkId = is2026 ? data[offset + 3] : data[offset + 2]
                 });
 
-                offset += ENTRY_SIZE;
+                offset += entrySize;
             }
         }
 

@@ -40,7 +40,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
         /// Applies session history data for a single car into the buffers dictionary.
         /// Must be called under _snapshotLock.
         /// </summary>
-        public static void Apply(Dictionary<byte, State.SessionHistoryBuffer> buffers, byte[] data)
+        public static void Apply(Dictionary<byte, State.SessionHistoryBuffer> buffers, byte[] data, int maxCars = 22)
         {
             // Minimum: header + 7 fields + at least 1 lap entry
             if (data.Length < LAP_HISTORY_OFFSET + LAP_ENTRY_SIZE) return;
@@ -48,7 +48,7 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
             byte carIdx = data[FIELDS_OFFSET];       // +0: m_carIdx
             byte numLaps = data[FIELDS_OFFSET + 1];  // +1: m_numLaps
 
-            if (carIdx > 21) return; // F1 25 max 22 cars (0-21)
+            if (carIdx >= maxCars) return; // max cars: 22 (2025) or 24 (2026)
             if (numLaps == 0) return;
 
             if (!buffers.ContainsKey(carIdx))
