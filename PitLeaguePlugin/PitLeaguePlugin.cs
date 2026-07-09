@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.9-rc5";
+        public const string VERSION = "2.8.9-rc6";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -120,6 +120,10 @@ namespace PitLeague.SimHub
 
         // Anti-duplicate: identity of last successfully sent result
         private string _lastSentResultId;
+
+        // Fallback suppression: prevent stall/transition from re-sending after successful FC send
+        private DateTime _raceStartUtc = DateTime.MinValue;
+        private DateTime _lastSuccessfulSendUtc = DateTime.MinValue;
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -318,12 +322,23 @@ namespace PitLeague.SimHub
                     if (stalledSeconds >= RESULT_FC_WAIT_SECONDS && !_resultSentThisSession
                         && !_activeAdapter.HasFinalClassification)
                     {
+                        // Suppress fallback if this race was already sent successfully
+                        if (_lastSuccessfulSendUtc > _raceStartUtc && _raceStartUtc != DateTime.MinValue)
+                        {
+                            global::SimHub.Logging.Current.Info(
+                                $"[PitLeague] Fallback suprimido (stall_timeout): corrida atual já enviada às {_lastSuccessfulSendUtc:HH:mm:ss}");
+                            _wasInRace = false;
+                            _lastValidDataInRace = DateTime.MinValue;
+                        }
+                        else
+                        {
                         global::SimHub.Logging.Current.Info($"[PitLeague] Stall detectado em Race por {stalledSeconds:F0}s (FC wait {RESULT_FC_WAIT_SECONDS}s) — considerando corrida finalizada | opponents={_lastOpponents?.Count ?? 0}");
                         TriggerResultReady("stall_timeout");
                         _wasInRace = false;
                         _lastValidDataInRace = DateTime.MinValue;
                         _stallLogged = false;
                         return;
+                        }
                     }
                 }
                 return;
@@ -493,12 +508,22 @@ namespace PitLeague.SimHub
             if (_wasInRace && !isRace && !_resultSentThisSession
                 && !_activeAdapter.HasFinalClassification)
             {
-                TriggerResultReady("session_transition");
+                // Suppress fallback if this race was already sent successfully
+                if (_lastSuccessfulSendUtc > _raceStartUtc && _raceStartUtc != DateTime.MinValue)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Fallback suprimido (session_transition): corrida atual já enviada às {_lastSuccessfulSendUtc:HH:mm:ss}");
+                }
+                else
+                {
+                    TriggerResultReady("session_transition");
+                }
             }
 
             // Detect new race session (reset state)
             if (isRace && !_wasInRace)
             {
+                _raceStartUtc = DateTime.UtcNow;
                 _resultSentThisSession = false;
                 _lastSentResultId = null;
                 _resultRejected = false;
@@ -561,6 +586,17 @@ namespace PitLeague.SimHub
                 }
             }
 
+            // Fallback race validation: require data from a real race session (kills lobby/transition ghosts)
+            if (!_activeAdapter.HasFinalClassification && reason != "manual_capture_forced_snapshot")
+            {
+                if (_lastTotalLaps <= 0 || _lastOpponents == null || _lastOpponents.Count == 0)
+                {
+                    global::SimHub.Logging.Current.Info(
+                        $"[PitLeague] Fallback suprimido: corrida sem dados suficientes (totalLaps={_lastTotalLaps}, opponents={_lastOpponents?.Count ?? 0}, reason={reason})");
+                    return;
+                }
+            }
+
             if (!_activeAdapter.HasFinalClassification && !HasPersistedResult)
             {
                 global::SimHub.Logging.Current.Warn("[PitLeague] TriggerResultReady mas adapter sem dados e sem JSON persistido.");
@@ -572,13 +608,17 @@ namespace PitLeague.SimHub
             {
                 // Diagnostic: last packet ages for each type
                 var packetAges = "";
+                var fcStatus = "não recebida";
                 if (_activeAdapter is F1_25_UdpAdapter f125Diag)
                 {
                     var ages = f125Diag.GetLastPacketAges();
                     packetAges = ages != null ? $" | lastPackets=[{ages}]" : "";
+                    // If FC was seen but adapter no longer has it, it was consumed by a prior send
+                    if (ages != null && !ages.Contains("FC:never"))
+                        fcStatus = "já consumida (estado resetado pós-envio)";
                 }
                 global::SimHub.Logging.Current.Info(
-                    $"[PitLeague] Usando resultado reconstruído do estado ao vivo — FinalClassification não recebida. JSON: {_resultJsonPath}{packetAges}");
+                    $"[PitLeague] Usando resultado reconstruído — FC {fcStatus}. JSON: {_resultJsonPath}{packetAges}");
             }
 
             ResultReadyToSend = true;
@@ -1033,6 +1073,7 @@ namespace PitLeague.SimHub
                     Settings.LastSentAt = DateTime.UtcNow;
                     Settings.LastSendStatus = "Dados enviados com sucesso" + matchInfo;
                     _resultSentThisSession = true;
+                    _lastSuccessfulSendUtc = DateTime.UtcNow;
 
                     // Anti-duplicate: register identity of sent payload
                     try
