@@ -46,6 +46,21 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private bool _format2026Active;       // true when currently dropping 2025
         private const int FORMAT_DECAY_SECONDS = 10;
 
+        // Latch observability
+        private int _latchDropCount;
+        private DateTime _lastLatchLogUtc = DateTime.MinValue;
+        private bool _fcBypassLogged; // log FC-2025 bypass once per session
+
+        // Last-seen time per packet type (for fallback diagnostics)
+        private readonly Dictionary<int, DateTime> _lastPacketTimeUtc = new Dictionary<int, DateTime>();
+        private static readonly Dictionary<int, string> PACKET_NAMES = new Dictionary<int, string>
+        {
+            {0, "Motion"}, {1, "Session"}, {3, "Event"}, {4, "Participants"},
+            {6, "Telemetry"}, {7, "CarStatus"}, {8, "FinalClassification"},
+            {9, "LobbyInfo"}, {10, "CarDamage"}, {11, "SessionHistory"},
+            {12, "TyreSets"}, {13, "MotionEx"}, {2, "LapData"},
+        };
+
         // Hexdump capture: 1 sample per PacketId per format (diagnostic, not production)
         private readonly Dictionary<byte, int> _hexdumpDoneByPacketId = new Dictionary<byte, int>();
         private readonly Dictionary<byte, int> _hexdumpDone2025ByPacketId = new Dictionary<byte, int>();
@@ -244,6 +259,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 _packetCounts.Clear();
             }
             _fcProcessed = false;
+            _fcBypassLogged = false;
             _lastFcSessionUID = 0;
             // Reset frozen session metadata
             _frozenSessionType = null;
@@ -310,11 +326,38 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             if (_format2026Active)
                             {
                                 if ((DateTime.UtcNow - _lastFormat2026SeenUtc).TotalSeconds < FORMAT_DECAY_SECONDS)
-                                    continue; // silently drop
-                                // Decay expired — 2026 stream stopped, fall back to 2025
-                                _format2026Active = false;
-                                global::SimHub.Logging.Current.Info(
-                                    $"[PitLeague:F1_25] Format 2026 ausente há {FORMAT_DECAY_SECONDS}s, voltando a aceitar 2025");
+                                {
+                                    // FC (packetId=8) NEVER dropped — accept in both formats
+                                    if (header.PacketId == 8)
+                                    {
+                                        if (!_fcBypassLogged)
+                                        {
+                                            global::SimHub.Logging.Current.Info(
+                                                "[PitLeague:F1_25] FinalClassification 2025 aceita apesar do latch 2026 (FC fura latch)");
+                                            _fcBypassLogged = true;
+                                        }
+                                        // fall through to processing
+                                    }
+                                    else
+                                    {
+                                        _latchDropCount++;
+                                        if ((DateTime.UtcNow - _lastLatchLogUtc).TotalSeconds >= 60)
+                                        {
+                                            global::SimHub.Logging.Current.Info(
+                                                $"[PitLeague:F1_25] [latch] {_latchDropCount} pacotes 2025 descartados (últimos 60s)");
+                                            _latchDropCount = 0;
+                                            _lastLatchLogUtc = DateTime.UtcNow;
+                                        }
+                                        continue; // drop non-FC 2025 packet
+                                    }
+                                }
+                                else
+                                {
+                                    // Decay expired — 2026 stream stopped, fall back to 2025
+                                    _format2026Active = false;
+                                    global::SimHub.Logging.Current.Info(
+                                        $"[PitLeague:F1_25] Format 2026 ausente há {FORMAT_DECAY_SECONDS}s, voltando a aceitar 2025");
+                                }
                             }
                         }
 
@@ -327,6 +370,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             if (!_packetCounts.ContainsKey(header.PacketId))
                                 _packetCounts[header.PacketId] = 0;
                             _packetCounts[header.PacketId]++;
+                            _lastPacketTimeUtc[header.PacketId] = DateTime.UtcNow;
                         }
 
                         // Hexdump: capture 1 sample per target PacketId per format
@@ -731,6 +775,34 @@ namespace PitLeague.SimHub.Adapters.F1_25
             {
                 return _packetCounts.ToDictionary(kv => $"packetId_{kv.Key}", kv => kv.Value);
             }
+        }
+
+        /// <summary>
+        /// Returns human-readable ages of last-seen packets (e.g. "FC:never Session:2s LapData:0s").
+        /// Used for fallback diagnostics.
+        /// </summary>
+        public string GetLastPacketAges()
+        {
+            var now = DateTime.UtcNow;
+            var keyIds = new[] { 8, 1, 2, 4, 10, 11 }; // FC, Session, LapData, Participants, CarDamage, SessionHistory
+            var parts = new System.Collections.Generic.List<string>();
+            lock (_snapshotLock)
+            {
+                foreach (var id in keyIds)
+                {
+                    var name = PACKET_NAMES.ContainsKey(id) ? PACKET_NAMES[id] : $"id{id}";
+                    if (_lastPacketTimeUtc.ContainsKey(id))
+                    {
+                        var age = (int)(now - _lastPacketTimeUtc[id]).TotalSeconds;
+                        parts.Add($"{name}:{age}s");
+                    }
+                    else
+                    {
+                        parts.Add($"{name}:never");
+                    }
+                }
+            }
+            return string.Join(" ", parts);
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────────
