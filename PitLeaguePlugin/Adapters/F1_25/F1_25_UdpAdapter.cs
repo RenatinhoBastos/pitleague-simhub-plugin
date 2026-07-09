@@ -41,6 +41,44 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Format rejection diagnostics
         private long _formatRejectCount;
 
+        // Format latch: prefer 2026 via global decay (drop 2025 while 2026 is recent)
+        private DateTime _lastFormat2026SeenUtc = DateTime.MinValue;
+        private bool _format2026Active;       // true when currently dropping 2025
+        private const int FORMAT_DECAY_SECONDS = 10;
+
+        // Hexdump capture: 1 sample per PacketId per format (diagnostic, not production)
+        private readonly Dictionary<byte, int> _hexdumpDoneByPacketId = new Dictionary<byte, int>();
+        private readonly Dictionary<byte, int> _hexdumpDone2025ByPacketId = new Dictionary<byte, int>();
+        private static readonly HashSet<byte> _hexdumpTargetIds = new HashSet<byte>
+        {
+            PacketIds.Session,                // 1
+            PacketIds.LapData,                // 2
+            PacketIds.Participants,            // 4
+            PacketIds.SessionHistory,          // 11
+            PacketIds.FinalClassification,     // 8
+        };
+        private static readonly Dictionary<byte, int> _hexdumpBytesPerPacket = new Dictionary<byte, int>
+        {
+            { PacketIds.Session, 64 },
+            { PacketIds.LapData, 80 },
+            { PacketIds.Participants, 80 },
+            { PacketIds.SessionHistory, 64 },
+            { PacketIds.FinalClassification, 80 },
+        };
+        private static readonly Dictionary<byte, string> _hexdumpPacketNames = new Dictionary<byte, string>
+        {
+            { PacketIds.Session, "Session" },
+            { PacketIds.LapData, "LapData" },
+            { PacketIds.Participants, "Participants" },
+            { PacketIds.SessionHistory, "SessionHistory" },
+            { PacketIds.FinalClassification, "FinalClassification" },
+        };
+        private static readonly Dictionary<byte, int> _hexdumpExpectedSizes = new Dictionary<byte, int>
+        {
+            { PacketIds.FinalClassification, FinalClassificationParser.EXPECTED_PACKET_SIZE },
+            { PacketIds.SessionHistory, SessionHistoryParser.EXPECTED_PACKET_SIZE },
+        };
+
         // Forward stats
         private long _forwardPacketsSent;
         private long _forwardErrors;
@@ -244,13 +282,40 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     try
                     {
                         var header = HeaderParser.Parse(buffer);
-                        if (header.PacketFormat != 2025)
+
+                        // Accept 2025 and 2026; reject everything else
+                        if (header.PacketFormat != 2025 && header.PacketFormat != 2026)
                         {
                             var cnt = Interlocked.Increment(ref _formatRejectCount);
                             if (cnt == 1 || cnt % 5000 == 0)
                                 global::SimHub.Logging.Current.Warn(
-                                    $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025) packetId={header.PacketId} rejectCount={cnt}");
+                                    $"[PitLeague:F1_25] Packet rejected: format={header.PacketFormat} (expected 2025/2026) packetId={header.PacketId} rejectCount={cnt}");
                             continue;
+                        }
+
+                        // Format latch: global decay — prefer 2026 while recently seen
+                        if (header.PacketFormat == 2026)
+                        {
+                            _lastFormat2026SeenUtc = DateTime.UtcNow;
+                            if (!_format2026Active)
+                            {
+                                _format2026Active = true;
+                                global::SimHub.Logging.Current.Info(
+                                    "[PitLeague:F1_25] Dual-broadcast detectado, priorizando format 2026");
+                            }
+                        }
+                        else if (header.PacketFormat == 2025)
+                        {
+                            // Drop 2025 while 2026 was seen within the decay window
+                            if (_format2026Active)
+                            {
+                                if ((DateTime.UtcNow - _lastFormat2026SeenUtc).TotalSeconds < FORMAT_DECAY_SECONDS)
+                                    continue; // silently drop
+                                // Decay expired — 2026 stream stopped, fall back to 2025
+                                _format2026Active = false;
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague:F1_25] Format 2026 ausente há {FORMAT_DECAY_SECONDS}s, voltando a aceitar 2025");
+                            }
                         }
 
                         // Track live SessionUID (survives Reset, used for session change detection)
@@ -264,7 +329,21 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             _packetCounts[header.PacketId]++;
                         }
 
-                        DispatchPacket(header, buffer);
+                        // Hexdump: capture 1 sample per target PacketId per format
+                        if (_hexdumpTargetIds.Contains(header.PacketId))
+                        {
+                            var dict = header.PacketFormat == 2025 ? _hexdumpDone2025ByPacketId : _hexdumpDoneByPacketId;
+                            lock (_snapshotLock)
+                            {
+                                if (!dict.ContainsKey(header.PacketId))
+                                {
+                                    dict[header.PacketId] = 1;
+                                    LogHexdump(header.PacketFormat, header.PacketId, buffer);
+                                }
+                            }
+                        }
+
+                        DispatchPacket(header, buffer, header.PacketFormat);
                     }
                     catch (Exception ex)
                     {
@@ -280,6 +359,29 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     global::SimHub.Logging.Current.Warn(
                         $"[PitLeague:F1_25] UDP receive error: {ex.Message}");
                 }
+            }
+        }
+
+        private void LogHexdump(ushort format, byte packetId, byte[] buffer)
+        {
+            try
+            {
+                var name = _hexdumpPacketNames.ContainsKey(packetId) ? _hexdumpPacketNames[packetId] : $"Unknown_{packetId}";
+                int maxBytes = _hexdumpBytesPerPacket.ContainsKey(packetId) ? _hexdumpBytesPerPacket[packetId] : 64;
+                int n = Math.Min(maxBytes, buffer.Length);
+                string expected = _hexdumpExpectedSizes.ContainsKey(packetId) ? $" expectedLength={_hexdumpExpectedSizes[packetId]}" : "";
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague:HEXDUMP] format={format} packetId={packetId} packetName={name} length={buffer.Length}{expected}");
+                for (int off = 0; off < n; off += 16)
+                {
+                    int lineLen = Math.Min(16, n - off);
+                    var hex = BitConverter.ToString(buffer, off, lineLen).Replace("-", " ");
+                    global::SimHub.Logging.Current.Info($"[PitLeague:HEXDUMP]   [{off:X4}] {hex}");
+                }
+            }
+            catch (Exception ex)
+            {
+                global::SimHub.Logging.Current.Warn($"[PitLeague:HEXDUMP] error: {ex.Message}");
             }
         }
 
@@ -304,8 +406,11 @@ namespace PitLeague.SimHub.Adapters.F1_25
 
         // ── Packet dispatch ──────────────────────────────────────────────────────
 
-        private void DispatchPacket(PacketHeader header, byte[] bytes)
+        private void DispatchPacket(PacketHeader header, byte[] bytes, ushort format = 2025)
         {
+            bool is2026 = format == 2026;
+            int maxCars = is2026 ? 24 : 22;
+
             switch (header.PacketId)
             {
                 case PacketIds.Session:
@@ -317,21 +422,21 @@ namespace PitLeague.SimHub.Adapters.F1_25
                         _lastKnownTrack = _session.Track;
                     break;
                 case PacketIds.LapData:
-                    lock (_snapshotLock) { LapDataParser.Apply(_lapBuffers, bytes); }
+                    lock (_snapshotLock) { LapDataParser.Apply(_lapBuffers, bytes, maxCars); }
                     break;
                 case PacketIds.Event:
                     lock (_snapshotLock) { EventParser.Apply(_events, bytes); }
                     break;
                 case PacketIds.Participants:
-                    ParticipantsParser.Apply(_participants, bytes);
+                    ParticipantsParser.Apply(_participants, bytes, is2026);
                     break;
                 case PacketIds.CarDamage:
-                    lock (_snapshotLock) { CarDamageParser.Apply(_damageBuffers, bytes); }
+                    lock (_snapshotLock) { CarDamageParser.Apply(_damageBuffers, bytes, maxCars); }
                     break;
                 case PacketIds.SessionHistory:
                     try
                     {
-                        lock (_snapshotLock) { SessionHistoryParser.Apply(_sessionHistoryBuffers, bytes); }
+                        lock (_snapshotLock) { SessionHistoryParser.Apply(_sessionHistoryBuffers, bytes, maxCars); }
                     }
                     catch (Exception shEx)
                     {
@@ -344,11 +449,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                     _fcProcessed = true;
                     _lastFcSessionUID = header.SessionUID;
 
-                    if (bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
+                    // FC expected size varies: 1042 (2025, 22 cars) or 1134 (2026, 24 cars)
+                    int expectedFcSize = is2026 ? 1134 : FinalClassificationParser.EXPECTED_PACKET_SIZE;
+                    if (bytes.Length != expectedFcSize && bytes.Length != FinalClassificationParser.EXPECTED_PACKET_SIZE)
                     {
                         global::SimHub.Logging.Current.Warn(
-                            $"[PitLeague:F1_25] FinalClassification size {bytes.Length} != " +
-                            $"{FinalClassificationParser.EXPECTED_PACKET_SIZE}. Validate offsets.");
+                            $"[PitLeague:F1_25] FinalClassification size {bytes.Length} (expected {expectedFcSize}). Validate offsets.");
                     }
                     lock (_snapshotLock)
                     {

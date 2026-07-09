@@ -71,13 +71,13 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
 
     public static class LapDataParser
     {
-        public static void Apply(Dictionary<byte, State.LapBuffer> buffers, byte[] data)
+        public static void Apply(Dictionary<byte, State.LapBuffer> buffers, byte[] data, int maxCars = 22)
         {
             if (data.Length < PacketHeader.SIZE + 10) return;
 
             int offset = PacketHeader.SIZE;
-            // LapData packet: 22 entries after header
-            for (byte carIdx = 0; carIdx < 22 && offset + 43 <= data.Length; carIdx++)
+            // LapData packet: maxCars entries after header (22 for 2025, 24 for 2026; entry size unchanged at 57)
+            for (byte carIdx = 0; carIdx < maxCars && offset + 43 <= data.Length; carIdx++)
             {
                 try
                 {

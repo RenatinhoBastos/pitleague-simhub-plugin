@@ -20,13 +20,13 @@ namespace PitLeague.SimHub.Adapters.F1_25.Udp
         // Plus more fields after. Approx 42 bytes per car.
         private const int ENTRY_SIZE = 42;
 
-        public static void Apply(Dictionary<byte, State.CarDamageBuffer> buffers, byte[] data)
+        public static void Apply(Dictionary<byte, State.CarDamageBuffer> buffers, byte[] data, int maxCars = 22)
         {
             if (data.Length < PacketHeader.SIZE + 10) return;
 
             int offset = PacketHeader.SIZE;
 
-            for (byte carIdx = 0; carIdx < 22 && offset + ENTRY_SIZE <= data.Length; carIdx++)
+            for (byte carIdx = 0; carIdx < maxCars && offset + ENTRY_SIZE <= data.Length; carIdx++)
             {
                 // Wing damage values at offset+24, +25, +26 within entry
                 byte flWing = data[offset + 24];
