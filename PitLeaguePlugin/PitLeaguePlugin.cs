@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.9-rc4";
+        public const string VERSION = "2.8.9-rc5";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -570,8 +570,15 @@ namespace PitLeague.SimHub
 
             if (!_activeAdapter.HasFinalClassification && HasPersistedResult)
             {
+                // Diagnostic: last packet ages for each type
+                var packetAges = "";
+                if (_activeAdapter is F1_25_UdpAdapter f125Diag)
+                {
+                    var ages = f125Diag.GetLastPacketAges();
+                    packetAges = ages != null ? $" | lastPackets=[{ages}]" : "";
+                }
                 global::SimHub.Logging.Current.Info(
-                    $"[PitLeague] Usando resultado reconstruído do estado ao vivo — FinalClassification não recebida. JSON: {_resultJsonPath}");
+                    $"[PitLeague] Usando resultado reconstruído do estado ao vivo — FinalClassification não recebida. JSON: {_resultJsonPath}{packetAges}");
             }
 
             ResultReadyToSend = true;
