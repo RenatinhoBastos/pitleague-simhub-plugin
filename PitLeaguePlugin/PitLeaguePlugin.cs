@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.9";
+        public const string VERSION = "2.8.9-rc4";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -117,6 +117,9 @@ namespace PitLeague.SimHub
         private DateTime _lastJsonWriteTime = DateTime.MinValue;
         private const int JSON_WRITE_INTERVAL_MS = 3000; // write every 3s max
         private string _currentSessionUID;
+
+        // Anti-duplicate: identity of last successfully sent result
+        private string _lastSentResultId;
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -216,6 +219,14 @@ namespace PitLeague.SimHub
                 "PitLeague");
             try { Directory.CreateDirectory(_resultJsonDir); } catch { }
             global::SimHub.Logging.Current.Info($"[PitLeague] JSON result dir: {_resultJsonDir}");
+
+            // Restore anti-duplicate id from disk (survives SimHub restart)
+            try
+            {
+                var idPath = Path.Combine(_resultJsonDir, $"last_sent_id_{Settings.LeagueId}.txt");
+                if (File.Exists(idPath)) _lastSentResultId = File.ReadAllText(idPath).Trim();
+            }
+            catch { }
 
             // Heartbeat timer: first in 5s, then every 30s
             _heartbeatTimer = new System.Threading.Timer(
@@ -333,6 +344,7 @@ namespace PitLeague.SimHub
                 {
                     _lastResetSessionUID = liveUID;
                     _resultSentThisSession = false;
+                    _lastSentResultId = null;
                     _resultRejected = false;
                     _sendingResult = false;
                     _qualiSentThisSession = false;
@@ -488,6 +500,7 @@ namespace PitLeague.SimHub
             if (isRace && !_wasInRace)
             {
                 _resultSentThisSession = false;
+                _lastSentResultId = null;
                 _resultRejected = false;
                 _sendingResult = false;
                 _qualiSentThisSession = false;
@@ -939,6 +952,17 @@ namespace PitLeague.SimHub
                         UpdateStatus("Sem corrida nova capturada — resultado anterior não reenviado. / No new race captured — previous result not resent.");
                         return false;
                     }
+
+                    // Anti-duplicate: block if this exact result was already sent successfully
+                    var resultId = !string.IsNullOrEmpty(jsonUID) ? jsonUID : JsonHashHelper.Compute(json);
+                    if (!string.IsNullOrEmpty(_lastSentResultId) && resultId == _lastSentResultId)
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague] Envio suprimido: resultado já enviado (id={resultId})");
+                        UpdateStatus("Resultado já enviado — envio duplicado suprimido. / Result already sent — duplicate suppressed.");
+                        _resultSentThisSession = true; // ensure no further retries
+                        return false;
+                    }
                 }
                 catch { }
 
@@ -1002,6 +1026,19 @@ namespace PitLeague.SimHub
                     Settings.LastSentAt = DateTime.UtcNow;
                     Settings.LastSendStatus = "Dados enviados com sucesso" + matchInfo;
                     _resultSentThisSession = true;
+
+                    // Anti-duplicate: register identity of sent payload
+                    try
+                    {
+                        var parsed = Newtonsoft.Json.Linq.JObject.Parse(json);
+                        var uid = parsed["sessionUID"]?.ToString();
+                        _lastSentResultId = !string.IsNullOrEmpty(uid) ? uid : JsonHashHelper.Compute(json);
+                        // Persist alongside JSON so it survives SimHub restart
+                        var idPath = Path.Combine(_resultJsonDir ?? "", $"last_sent_id_{Settings.LeagueId}.txt");
+                        File.WriteAllText(idPath, _lastSentResultId);
+                        global::SimHub.Logging.Current.Info($"[PitLeague] Anti-duplicate: registered sent id={_lastSentResultId}");
+                    }
+                    catch { }
                     ResultReadyToSend = false;
                     IsConnected = true;
                     DiscardIfQualifying();
@@ -1504,5 +1541,18 @@ namespace PitLeague.SimHub
         public string CarNumber { get; set; }
         public TimeSpan? BestLapTime { get; set; }
         public bool IsPlayer { get; set; }
+    }
+
+    // ─── Hash helper for anti-duplicate guard ──────────────────────────────
+    internal static class JsonHashHelper
+    {
+        internal static string Compute(string json)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(json));
+                return BitConverter.ToString(bytes, 0, 8).Replace("-", "").ToLowerInvariant();
+            }
+        }
     }
 }
