@@ -49,6 +49,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
         // Latch observability
         private int _latchDropCount;
         private DateTime _lastLatchLogUtc = DateTime.MinValue;
+        private bool _fcBypassLogged; // log FC-2025 bypass once per session
 
         // Last-seen time per packet type (for fallback diagnostics)
         private readonly Dictionary<int, DateTime> _lastPacketTimeUtc = new Dictionary<int, DateTime>();
@@ -258,6 +259,7 @@ namespace PitLeague.SimHub.Adapters.F1_25
                 _packetCounts.Clear();
             }
             _fcProcessed = false;
+            _fcBypassLogged = false;
             _lastFcSessionUID = 0;
             // Reset frozen session metadata
             _frozenSessionType = null;
@@ -328,8 +330,12 @@ namespace PitLeague.SimHub.Adapters.F1_25
                                     // FC (packetId=8) NEVER dropped — accept in both formats
                                     if (header.PacketId == 8)
                                     {
-                                        global::SimHub.Logging.Current.Info(
-                                            "[PitLeague:F1_25] FinalClassification 2025 aceita apesar do latch 2026 (FC fura latch)");
+                                        if (!_fcBypassLogged)
+                                        {
+                                            global::SimHub.Logging.Current.Info(
+                                                "[PitLeague:F1_25] FinalClassification 2025 aceita apesar do latch 2026 (FC fura latch)");
+                                            _fcBypassLogged = true;
+                                        }
                                         // fall through to processing
                                     }
                                     else
