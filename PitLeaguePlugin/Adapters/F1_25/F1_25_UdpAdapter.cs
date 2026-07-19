@@ -142,10 +142,15 @@ namespace PitLeague.SimHub.Adapters.F1_25
         private string _lastKnownType;
         private string _lastKnownTrack;
 
-        // Live SessionUID from packet headers — updated every packet, survives Reset()
-        // Uses long + Interlocked (volatile not allowed for ulong in .NET Framework 4.8)
-        private long _liveSessionUID;
-        public ulong CurrentLiveSessionUID => (ulong)Interlocked.Read(ref _liveSessionUID);
+        // Dual-slot SessionUID: one per PacketFormat (2025, 2026).
+        // Prevents flip-flop between dual-broadcast UIDs from looking like session change.
+        // Session change = UID changes WITHIN the same format (e.g. new 2026 UID != old 2026 UID).
+        // Uses long + Interlocked (.NET Framework 4.8 compat).
+        private long _sessionUid2025;
+        private long _sessionUid2026;
+        // Composite stable session ID: changes only on genuine session change (not flip-flop)
+        private long _stableSessionId;
+        public ulong CurrentLiveSessionUID => (ulong)Interlocked.Read(ref _stableSessionId);
 
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
 
@@ -361,9 +366,49 @@ namespace PitLeague.SimHub.Adapters.F1_25
                             }
                         }
 
-                        // Track live SessionUID (survives Reset, used for session change detection)
+                        // Track live SessionUID per format (dual-slot, survives Reset)
+                        // Session change = UID changes within its own format slot
                         if (header.SessionUID != 0)
-                            Interlocked.Exchange(ref _liveSessionUID, (long)header.SessionUID);
+                        {
+                            var uid = (long)header.SessionUID;
+                            bool isNewSession = false;
+
+                            if (header.PacketFormat == 2026)
+                            {
+                                var prev = Interlocked.Read(ref _sessionUid2026);
+                                if (prev != 0 && prev != uid)
+                                    isNewSession = true; // 2026 UID changed = genuine new session
+                                Interlocked.Exchange(ref _sessionUid2026, uid);
+                            }
+                            else if (header.PacketFormat == 2025)
+                            {
+                                var prev = Interlocked.Read(ref _sessionUid2025);
+                                if (prev != 0 && prev != uid)
+                                    isNewSession = true; // 2025 UID changed = genuine new session
+                                Interlocked.Exchange(ref _sessionUid2025, uid);
+                            }
+
+                            if (isNewSession)
+                            {
+                                // New session detected: reset both slots and update stable ID
+                                if (header.PacketFormat == 2026)
+                                    Interlocked.Exchange(ref _sessionUid2025, 0); // clear other slot
+                                else
+                                    Interlocked.Exchange(ref _sessionUid2026, 0);
+
+                                var oldStable = Interlocked.Exchange(ref _stableSessionId, uid);
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague:F1_25][UID] Session change: format={header.PacketFormat} " +
+                                    $"old={oldStable} new={uid} (slot UID changed within format)");
+                            }
+                            else if (Interlocked.Read(ref _stableSessionId) == 0)
+                            {
+                                // First UID ever seen — initialize stable ID
+                                Interlocked.Exchange(ref _stableSessionId, uid);
+                                global::SimHub.Logging.Current.Info(
+                                    $"[PitLeague:F1_25][UID] Initial: format={header.PacketFormat} uid={uid}");
+                            }
+                        }
 
                         lock (_snapshotLock)
                         {

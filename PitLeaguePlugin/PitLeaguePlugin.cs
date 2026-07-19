@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.9";
+        public const string VERSION = "2.8.10-rc1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -120,6 +120,8 @@ namespace PitLeague.SimHub
 
         // Anti-duplicate: identity of last successfully sent result
         private string _lastSentResultId;
+        // Stable anti-dup: {track}_{raceStartUtc} key (immune to sessionUID rebuild)
+        private string _lastSentStableKey;
 
         // Fallback suppression: prevent stall/transition from re-sending after successful FC send
         private DateTime _raceStartUtc = DateTime.MinValue;
@@ -151,19 +153,19 @@ namespace PitLeague.SimHub
             {
                 settings.F1_25_UdpListenPort = 20778;
                 settings.F1_25_UdpForwardPort = 20777;
-                settings.F1_25_UdpForwardEnabled = true;
+                settings.F1_25_UdpForwardEnabled = false;
                 global::SimHub.Logging.Current.Info(
-                    "[PitLeague] Migrated UDP config: listen=20778, forward=20777 (relay mode). " +
+                    "[PitLeague] Migrated UDP config: listen=20778, forward=disabled (SimHub listens on 20777 natively). " +
                     "Update F1 25: UDP Port = 20778.");
             }
             else
             {
                 settings.F1_25_UdpListenPort = settings.F1_25_UdpPort;
                 settings.F1_25_UdpForwardPort = 20777;
-                settings.F1_25_UdpForwardEnabled = true;
+                settings.F1_25_UdpForwardEnabled = false;
                 global::SimHub.Logging.Current.Info(
                     $"[PitLeague] Preserved custom UDP listen port {settings.F1_25_UdpPort}, " +
-                    "added forward to :20777.");
+                    "forward disabled (SimHub listens on 20777 natively).");
             }
 
             settings.F1_25_UdpSettingsMigrated = true;
@@ -360,6 +362,7 @@ namespace PitLeague.SimHub
                     _lastResetSessionUID = liveUID;
                     _resultSentThisSession = false;
                     _lastSentResultId = null;
+                    _lastSentStableKey = null;
                     _resultRejected = false;
                     _sendingResult = false;
                     _qualiSentThisSession = false;
@@ -526,6 +529,7 @@ namespace PitLeague.SimHub
                 _raceStartUtc = DateTime.UtcNow;
                 _resultSentThisSession = false;
                 _lastSentResultId = null;
+                _lastSentStableKey = null;
                 _resultRejected = false;
                 _sendingResult = false;
                 _qualiSentThisSession = false;
@@ -1010,6 +1014,19 @@ namespace PitLeague.SimHub
                         _resultSentThisSession = true; // ensure no further retries
                         return false;
                     }
+
+                    // Stable anti-dup: {track}_{raceStartUtc} key (immune to sessionUID rebuild)
+                    var stableTrack = parsed["session"]?["track"]?.ToString() ?? "";
+                    var stableKey = $"{stableTrack}_{_raceStartUtc:yyyyMMddHHmmss}";
+                    if (!string.IsNullOrEmpty(_lastSentStableKey) && stableKey == _lastSentStableKey
+                        && _raceStartUtc != DateTime.MinValue)
+                    {
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague] Reenvio suprimido — corrida {stableKey} já enviada");
+                        UpdateStatus("Corrida já enviada — reenvio suprimido. / Race already sent — resend suppressed.");
+                        _resultSentThisSession = true;
+                        return false;
+                    }
                 }
                 catch { }
 
@@ -1085,6 +1102,12 @@ namespace PitLeague.SimHub
                         var idPath = Path.Combine(_resultJsonDir ?? "", $"last_sent_id_{Settings.LeagueId}.txt");
                         File.WriteAllText(idPath, _lastSentResultId);
                         global::SimHub.Logging.Current.Info($"[PitLeague] Anti-duplicate: registered sent id={_lastSentResultId}");
+                        // Stable key: {track}_{raceStartUtc}
+                        var sentTrack = parsed["session"]?["track"]?.ToString() ?? "";
+                        _lastSentStableKey = $"{sentTrack}_{_raceStartUtc:yyyyMMddHHmmss}";
+                        var stableKeyPath = Path.Combine(_resultJsonDir ?? "", $"last_sent_stable_{Settings.LeagueId}.txt");
+                        File.WriteAllText(stableKeyPath, _lastSentStableKey);
+                        global::SimHub.Logging.Current.Info($"[PitLeague] Anti-duplicate: stable key={_lastSentStableKey}");
                     }
                     catch { }
                     ResultReadyToSend = false;
@@ -1114,7 +1137,7 @@ namespace PitLeague.SimHub
                 else
                 {
                     var statusCode = (int)response.StatusCode;
-                    var erro = $"Erro {statusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
+                    var erro = TranslateApiError(statusCode, body);
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
                     // Keep JSON for retry — do NOT delete
@@ -1126,9 +1149,9 @@ namespace PitLeague.SimHub
             }
             catch (Exception ex)
             {
-                Settings.LastSendStatus = "Exceção: " + ex.Message;
+                Settings.LastSendStatus = "Exceção / Exception: " + ex.Message;
                 IsConnected = false;
-                UpdateStatus("Erro: " + ex.Message);
+                UpdateStatus("Erro / Error: " + ex.Message);
                 global::SimHub.Logging.Current.Error($"[PitLeague] SendResultFromJson exception: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
@@ -1240,7 +1263,7 @@ namespace PitLeague.SimHub
                 else
                 {
                     var statusCode = (int)response.StatusCode;
-                    var erro = $"Erro {statusCode}: {body.Substring(0, Math.Min(body.Length, 200))}";
+                    var erro = TranslateApiError(statusCode, body);
                     Settings.LastSendStatus = erro;
                     IsConnected = false;
 
@@ -1250,7 +1273,7 @@ namespace PitLeague.SimHub
                         DiscardIfQualifying();
                         global::SimHub.Logging.Current.Warn($"[PitLeague] Resultado REJEITADO pelo servidor (HTTP {statusCode}) — não será reenviado nesta sessão. Body: {body.Substring(0, Math.Min(500, body.Length))}");
                         AddMilestone("result_rejected", $"Falha no envio: HTTP {statusCode}", new { status = statusCode });
-                        UpdateStatus($"Resultado rejeitado (HTTP {statusCode}). Corrija o problema e tente na próxima corrida.");
+                        UpdateStatus(erro);
                     }
                     else
                     {
@@ -1307,7 +1330,7 @@ namespace PitLeague.SimHub
                 else
                 {
                     IsConnected = false;
-                    UpdateStatus($"Erro {(int)response.StatusCode}: {body.Substring(0, Math.Min(body.Length, 150))}");
+                    UpdateStatus(TranslateApiError((int)response.StatusCode, body));
                     return false;
                 }
             }
@@ -1556,6 +1579,32 @@ namespace PitLeague.SimHub
         }
 
         // ─── Helpers ──────────────────────────────────────────────────────────
+
+        /// <summary>Translate HTTP status code to actionable PT/EN message for the admin.</summary>
+        private static string TranslateApiError(int statusCode, string rawBody)
+        {
+            switch (statusCode)
+            {
+                case 401:
+                    return "Chave de API inválida ou revogada. Gere uma nova em Admin → Integrações → SimHub.\n" +
+                           "Invalid or revoked API key. Generate a new one in Admin → Integrations → SimHub.";
+                case 403:
+                    return "Esta chave não tem permissão para esta liga. Confira se o League ID corresponde à chave.\n" +
+                           "This key has no permission for this league. Check that the League ID matches the key.";
+                case 404:
+                    return "Liga não encontrada. Confira o League ID em Admin → Integrações → SimHub.\n" +
+                           "League not found. Check the League ID in Admin → Integrations → SimHub.";
+                case 429:
+                    return "Muitas tentativas em pouco tempo. Aguarde um instante.\n" +
+                           "Too many attempts. Wait a moment and try again.";
+                default:
+                    if (statusCode >= 500)
+                        return "Erro no servidor PitLeague. Tente novamente em instantes.\n" +
+                               "PitLeague server error. Try again shortly.";
+                    var preview = rawBody.Length > 150 ? rawBody.Substring(0, 150) : rawBody;
+                    return $"Erro {statusCode}: {preview}";
+            }
+        }
 
         private void UpdateStatus(string message)
         {

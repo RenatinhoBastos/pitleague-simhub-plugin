@@ -50,8 +50,8 @@ namespace PitLeague.SimHub
         /// <summary>Porta para onde o plugin reencaminha pacotes (default 20777, onde SimHub escuta)</summary>
         public int F1_25_UdpForwardPort { get; set; } = 20777;
 
-        /// <summary>Habilita forward para SimHub. Default true.</summary>
-        public bool F1_25_UdpForwardEnabled { get; set; } = true;
+        /// <summary>Habilita forward para SimHub. Default false (SimHub nativo escuta 20777 diretamente).</summary>
+        public bool F1_25_UdpForwardEnabled { get; set; } = false;
 
         /// <summary>Flag one-shot: migration de settings antigas já rodou</summary>
         public bool F1_25_UdpSettingsMigrated { get; set; } = false;
