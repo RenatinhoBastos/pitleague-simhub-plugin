@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.11-rc1";
+        public const string VERSION = "2.8.12-rc1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -554,7 +554,9 @@ namespace PitLeague.SimHub
             }
 
             // Detect new race session (reset state)
-            if (isRace && !_wasInRace)
+            // Guard: if result already sent, this is the results screen re-triggering (not a new race).
+            // A real new race will first reset _resultSentThisSession via session-proof UID change (:384-413).
+            if (isRace && !_wasInRace && !_resultSentThisSession)
             {
                 _raceStartUtc = DateTime.UtcNow;
                 _resultSentThisSession = false;
@@ -1069,7 +1071,7 @@ namespace PitLeague.SimHub
                         $"[PitLeague] Lendo JSON persistido ({json.Length} chars): {preview}");
                 }
 
-                // Parse JSON to validate and log critical fields before sending
+                // Parse JSON to validate critical fields BEFORE logging send attempt
                 int resultsCount = 0;
                 string guardTrack = "";
                 string guardUID = "";
@@ -1080,9 +1082,6 @@ namespace PitLeague.SimHub
                     resultsCount = (sess?["results"] as Newtonsoft.Json.Linq.JArray)?.Count ?? 0;
                     guardTrack = sess?["track"]?.ToString() ?? "";
                     guardUID = parsed["sessionUID"]?.ToString() ?? "";
-                    global::SimHub.Logging.Current.Info(
-                        $"[PitLeague] Enviando JSON: session.type={sess?["type"]} | track={sess?["track"]} | " +
-                        $"sessionUID={parsed["sessionUID"]} | results={resultsCount}");
                 }
                 catch { }
 
@@ -1096,6 +1095,10 @@ namespace PitLeague.SimHub
                     UpdateStatus("Envio bloqueado: sem dados de corrida válidos. / Send blocked: no valid race data.");
                     return false;
                 }
+
+                // Log send attempt (only after guard passed — no more "Enviando JSON: results=0" pollution)
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] Enviando JSON: results={resultsCount} | track={guardTrack} | sessionUID={guardUID}");
 
                 var url = $"{Settings.ApiBaseUrl.TrimEnd('/')}/api/integrations/simhub/result";
                 global::SimHub.Logging.Current.Info(
