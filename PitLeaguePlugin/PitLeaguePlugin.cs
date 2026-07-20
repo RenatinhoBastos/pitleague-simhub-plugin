@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.10-rc1";
+        public const string VERSION = "2.8.11-rc1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -126,6 +126,11 @@ namespace PitLeague.SimHub
         // Fallback suppression: prevent stall/transition from re-sending after successful FC send
         private DateTime _raceStartUtc = DateTime.MinValue;
         private DateTime _lastSuccessfulSendUtc = DateTime.MinValue;
+
+        // Provisional generic: stall/transition sent generic, but FC rich can still upgrade
+        private volatile bool _provisionalGenericSent = false;
+        private DateTime _provisionalSentUtc = DateTime.MinValue;
+        private const int RICH_UPGRADE_WINDOW_SECONDS = 180; // 3 min window for FC to upgrade generic
 
         // UI status
         public string LastStatusMessage { get; private set; } = "Aguardando corrida...";
@@ -273,8 +278,11 @@ namespace PitLeague.SimHub
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
         {
             // ── Check if F1 25 UDP adapter has final classification ──────────
-            // Use atomic guard to fire exactly once per session (prevents trigger storm)
-            if (_activeAdapter is F1_25_UdpAdapter f125 && f125.HasFinalClassification && !_resultSentThisSession)
+            // Allow entry if: (a) never sent, OR (b) only provisional generic was sent within upgrade window
+            var allowFcEntry = !_resultSentThisSession
+                || (_provisionalGenericSent && (DateTime.UtcNow - _provisionalSentUtc).TotalSeconds < RICH_UPGRADE_WINDOW_SECONDS);
+
+            if (_activeAdapter is F1_25_UdpAdapter f125 && f125.HasFinalClassification && allowFcEntry)
             {
                 if (Interlocked.CompareExchange(ref _resultDispatchGuard, 1, 0) == 0)
                 {
@@ -291,14 +299,24 @@ namespace PitLeague.SimHub
                         return;
                     }
 
-                    global::SimHub.Logging.Current.Info("[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 6s (Session History)");
-                    AddMilestone("fc_received", "Bandeira! Processando resultado (6s)...", null);
+                    var isUpgrade = _provisionalGenericSent;
+                    global::SimHub.Logging.Current.Info(isUpgrade
+                        ? "[PitLeague] F1 25 UDP: FinalClassification rica chegou — UPGRADE do genérico provisório (settle 6s)"
+                        : "[PitLeague] F1 25 UDP: FinalClassification recebida — aguardando settle window de 6s (Session History)");
+                    AddMilestone("fc_received", isUpgrade ? "FC rica! Atualizando resultado (6s)..." : "Bandeira! Processando resultado (6s)...", null);
                     // Debounce: wait 6s for Session History packets to complete all car laps
                     _resultDebounceTimer?.Dispose();
                     _resultDebounceTimer = new System.Threading.Timer(_ =>
                     {
                         global::SimHub.Logging.Current.Info("[PitLeague] Settle window concluída — enriquecendo JSON e disparando resultado");
                         AddMilestone("result_ready", "Resultado pronto", null);
+                        // For upgrade: temporarily allow send by clearing provisional flags
+                        if (isUpgrade)
+                        {
+                            _resultSentThisSession = false;
+                            _lastSentResultId = null;
+                            _lastSentStableKey = null;
+                        }
                         PersistResultJson();
                         EnrichJsonWithFinalClassification();
                         TriggerResultReady("f125_final_classification");
@@ -306,6 +324,16 @@ namespace PitLeague.SimHub
                     _wasInRace = false;
                 }
                 return;
+            }
+
+            // FC rica arrived OUTSIDE upgrade window — log and skip
+            if (_activeAdapter is F1_25_UdpAdapter f125Late && f125Late.HasFinalClassification
+                && _provisionalGenericSent && _resultSentThisSession)
+            {
+                var elapsed = (DateTime.UtcNow - _provisionalSentUtc).TotalSeconds;
+                global::SimHub.Logging.Current.Info(
+                    $"[PitLeague] FC rica chegou fora da janela de upgrade ({elapsed:F0}s > {RICH_UPGRADE_WINDOW_SECONDS}s) — mantendo genérico");
+                f125Late.DiscardFinalClassification();
             }
 
             // ── Stall detection: race data stopped arriving ──────────────────
@@ -363,6 +391,8 @@ namespace PitLeague.SimHub
                     _resultSentThisSession = false;
                     _lastSentResultId = null;
                     _lastSentStableKey = null;
+                    _provisionalGenericSent = false;
+                    _provisionalSentUtc = DateTime.MinValue;
                     _resultRejected = false;
                     _sendingResult = false;
                     _qualiSentThisSession = false;
@@ -530,6 +560,8 @@ namespace PitLeague.SimHub
                 _resultSentThisSession = false;
                 _lastSentResultId = null;
                 _lastSentStableKey = null;
+                _provisionalGenericSent = false;
+                _provisionalSentUtc = DateTime.MinValue;
                 _resultRejected = false;
                 _sendingResult = false;
                 _qualiSentThisSession = false;
@@ -798,7 +830,7 @@ namespace PitLeague.SimHub
                 }
 
                 var json = PayloadBuilder.Build(
-                    snapshot, usedAdapter, Settings.LeagueId, VERSION, udpStats);
+                    snapshot, usedAdapter, Settings.LeagueId, VERSION, udpStats, BuildRaceKey());
 
                 // Atomic write: temp file + rename
                 var filePath = Path.Combine(_resultJsonDir, $"last_result_{Settings.LeagueId}.json");
@@ -1088,9 +1120,27 @@ namespace PitLeague.SimHub
                         : "";
 
                     Settings.LastSentAt = DateTime.UtcNow;
-                    Settings.LastSendStatus = "Dados enviados com sucesso" + matchInfo;
-                    _resultSentThisSession = true;
                     _lastSuccessfulSendUtc = DateTime.UtcNow;
+
+                    // Determine if this was a rich (FC) or provisional generic send
+                    var isRichSend = _resultJsonHasFinalClassification;
+                    if (isRichSend)
+                    {
+                        // Definitive: FC rich sent — block all future sends
+                        _resultSentThisSession = true;
+                        _provisionalGenericSent = false;
+                        Settings.LastSendStatus = "Resultado rico enviado" + matchInfo;
+                    }
+                    else
+                    {
+                        // Provisional: generic via stall — allow FC upgrade later
+                        _resultSentThisSession = true; // blocks stall/transition re-sends
+                        _provisionalGenericSent = true;
+                        _provisionalSentUtc = DateTime.UtcNow;
+                        Settings.LastSendStatus = "Resultado provisório enviado (aguardando FC rica)" + matchInfo;
+                        global::SimHub.Logging.Current.Info(
+                            $"[PitLeague] Envio PROVISÓRIO (genérico via stall) — FC rica pode fazer upgrade em até {RICH_UPGRADE_WINDOW_SECONDS}s");
+                    }
 
                     // Anti-duplicate: register identity of sent payload
                     try
@@ -1579,6 +1629,18 @@ namespace PitLeague.SimHub
         }
 
         // ─── Helpers ──────────────────────────────────────────────────────────
+
+        /// <summary>Build stable raceKey: {track}_{raceStartUtc}. Used for backend upgrade matching.</summary>
+        private string BuildRaceKey()
+        {
+            var track = (_activeAdapter is F1_25_UdpAdapter f125rk)
+                ? (f125rk.FrozenSessionTrack ?? _lastTrackName ?? "")
+                : (_lastTrackName ?? "");
+            if (string.IsNullOrEmpty(track) || track == "Unknown") track = "";
+            var ts = _raceStartUtc != DateTime.MinValue ? _raceStartUtc.ToString("yyyyMMddHHmmss") : "";
+            if (string.IsNullOrEmpty(ts)) return null;
+            return track.Length > 0 ? $"{track}_{ts}" : ts;
+        }
 
         /// <summary>Translate HTTP status code to actionable PT/EN message for the admin.</summary>
         private static string TranslateApiError(int statusCode, string rawBody)

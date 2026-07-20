@@ -153,6 +153,8 @@ namespace PitLeague.SimHub.Adapters.F1_25
         public ulong CurrentLiveSessionUID => (ulong)Interlocked.Read(ref _stableSessionId);
 
         public bool HasFinalClassification => _finalClassification != null && _finalClassification.Count > 0;
+        /// <summary>Frozen track name from FinalClassification — stable during results screen.</summary>
+        public string FrozenSessionTrack => _frozenSessionTrack;
 
         /// <summary>Live session type from UDP SessionData @35 — updates every ~500ms.</summary>
         public string GetSessionType() => _session.Type;

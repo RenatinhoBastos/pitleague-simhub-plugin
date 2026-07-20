@@ -18,7 +18,8 @@ namespace PitLeague.SimHub.Capture
             IGameTelemetryAdapter adapter,
             string leagueId,
             string pluginVersion,
-            Dictionary<string, int> udpStats = null)
+            Dictionary<string, int> udpStats = null,
+            string raceKey = null)
         {
             var results = snapshot.Drivers.Select(d => new Dictionary<string, object>
             {
@@ -59,6 +60,7 @@ namespace PitLeague.SimHub.Capture
                 ["game"] = snapshot.Game,
                 ["leagueId"] = leagueId,
                 ["sessionUID"] = snapshot.SessionUID,
+                ["raceKey"] = raceKey,
                 ["capturedAt"] = snapshot.CapturedAt.ToString("O"),
                 ["_pitleague"] = new Dictionary<string, object>
                 {

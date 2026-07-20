@@ -21,7 +21,7 @@ namespace PitLeague.SimHub
         // ─── Comportamento ────────────────────────────────────────────────────
 
         /// <summary>Enviar resultado automaticamente ao fim da corrida</summary>
-        public bool AutoSendOnRaceEnd { get; set; } = false;
+        public bool AutoSendOnRaceEnd { get; set; } = true;
 
         /// <summary>Quando true, envia FC de sessões de Qualifying (seletiva). Default false.</summary>
         public bool SendQualifying { get; set; } = false;
@@ -37,7 +37,7 @@ namespace PitLeague.SimHub
         // ─── Debug ────────────────────────────────────────────────────────────
 
         /// <summary>Mostrar logs detalhados no SimHub</summary>
-        public bool DebugMode { get; set; } = false;
+        public bool DebugMode { get; set; } = true;
 
         // ─── F1 25 UDP ───────────────────────────────────────────────────────
 
