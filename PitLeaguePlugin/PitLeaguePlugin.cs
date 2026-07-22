@@ -22,7 +22,7 @@ namespace PitLeague.SimHub
     [PluginName("PitLeague")]
     public class PitLeaguePlugin : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string VERSION = "2.8.12-rc1";
+        public const string VERSION = "2.8.13-rc1";
 
         // ─── SimHub interface ─────────────────────────────────────────────────
         public PluginManager PluginManager { get; set; }
@@ -288,8 +288,7 @@ namespace PitLeague.SimHub
                 {
                     var isValidType = _lastSessionType.IndexOf("Race", StringComparison.OrdinalIgnoreCase) >= 0
                         || _lastSessionType.IndexOf("Sprint", StringComparison.OrdinalIgnoreCase) >= 0
-                        || (Settings.SendQualifying
-                            && _lastSessionType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0);
+                        || _lastSessionType.IndexOf("Qualifying", StringComparison.OrdinalIgnoreCase) >= 0;
                     if (!isValidType)
                     {
                         global::SimHub.Logging.Current.Info(

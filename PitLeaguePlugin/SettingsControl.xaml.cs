@@ -27,7 +27,6 @@ namespace PitLeague.SimHub
             TxtLeagueId.Text = s.LeagueId;
             TxtMinDrivers.Text = s.MinDriversToSend.ToString();
             ChkAutoSend.IsChecked = s.AutoSendOnRaceEnd;
-            ChkSendQualifying.IsChecked = s.SendQualifying;
             ChkDebug.IsChecked = s.DebugMode;
             TxtVersion.Text = " v" + PitLeaguePlugin.VERSION;
 
@@ -108,12 +107,6 @@ namespace PitLeague.SimHub
         {
             if (_loading) return;
             _plugin.Settings.AutoSendOnRaceEnd = ChkAutoSend.IsChecked == true;
-        }
-
-        private void ChkSendQualifying_Click(object sender, RoutedEventArgs e)
-        {
-            if (_loading) return;
-            _plugin.Settings.SendQualifying = ChkSendQualifying.IsChecked == true;
         }
 
         private void ChkDebug_Click(object sender, RoutedEventArgs e)

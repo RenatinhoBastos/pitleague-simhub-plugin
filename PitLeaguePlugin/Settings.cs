@@ -23,9 +23,6 @@ namespace PitLeague.SimHub
         /// <summary>Enviar resultado automaticamente ao fim da corrida</summary>
         public bool AutoSendOnRaceEnd { get; set; } = true;
 
-        /// <summary>Quando true, envia FC de sessões de Qualifying (seletiva). Default false.</summary>
-        public bool SendQualifying { get; set; } = false;
-
         /// <summary>Mínimo de pilotos para considerar o resultado válido (evita corridas solo)</summary>
         public int MinDriversToSend { get; set; } = 2;
 
